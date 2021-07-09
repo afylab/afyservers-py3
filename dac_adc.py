@@ -37,7 +37,7 @@ import labrad.units as units
 from labrad.types import Value
 import numpy as np
 import time
-from exceptions import IndexError
+#from exceptions import IndexError
 
 TIMEOUT = Value(5,'s')
 BAUD    = 115200
