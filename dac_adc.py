@@ -33,11 +33,11 @@ from labrad.server import setting, Signal
 from labrad.devices import DeviceServer,DeviceWrapper
 from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet import reactor, defer
-# import labrad.units as units
+import labrad.units as units
 from labrad.types import Value
 import numpy as np
 import time
-#from exceptions import IndexError
+from exceptions import IndexError
 
 TIMEOUT = Value(5,'s')
 BAUD    = 115200
@@ -55,7 +55,7 @@ class DAC_ADCWrapper(DeviceWrapper):
     @inlineCallbacks
     def connect(self, server, port):
         """Connect to a device."""
-        print('connecting to "%s" on port "%s"...' % (server.name, port), end=' ')
+        print 'connecting to "%s" on port "%s"...' % (server.name, port),
         self.server = server
         self.ctx = server.context()
         self.port = port
@@ -67,7 +67,7 @@ class DAC_ADCWrapper(DeviceWrapper):
         p.timeout(TIMEOUT)
         print(" CONNECTED ")
         yield p.send()
-
+        
     def packet(self):
         """Create a packet in our private context."""
         return self.server.packet(context=self.ctx)
@@ -127,7 +127,7 @@ class DAC_ADCWrapper(DeviceWrapper):
         p.read_line()
         ans = yield p.send()
         returnValue(ans.read_line)
-
+        
 
 
 class DAC_ADCServer(DeviceServer):
@@ -147,11 +147,11 @@ class DAC_ADCServer(DeviceServer):
 
     @inlineCallbacks
     def initServer(self):
-        print('loading config info...', end=' ')
+        print 'loading config info...',
         self.reg = self.client.registry()
         yield self.loadConfigInfo()
-        print('done.')
-        print(self.serialLinks)
+        print 'done.'
+        print self.serialLinks
         yield DeviceServer.initServer(self)
 
     @inlineCallbacks
@@ -160,37 +160,37 @@ class DAC_ADCServer(DeviceServer):
         yield reg.cd(['', 'Servers', 'dac_adc', 'Links'], True)
         dirs, keys = yield reg.dir()
         p = reg.packet()
-        print(" created packet")
-        print("printing all the keys",keys)
+        print " created packet"
+        print "printing all the keys",keys
         for k in keys:
-            print("k=",k)
+            print "k=",k
             p.get(k, key=k)
-
+            
         ans = yield p.send()
-        print("ans=",ans)
+        print "ans=",ans
         self.serialLinks = dict((k, ans[k]) for k in keys)
 
     @inlineCallbacks
     def findDevices(self):
         """Find available devices from list stored in the registry."""
         devs = []
-        for name, (serServer, port) in list(self.serialLinks.items()):
+        for name, (serServer, port) in self.serialLinks.items():
             if serServer not in self.client.servers:
                 continue
             server = self.client[serServer]
-            #print(server)
-            print(port)
+            print server
+            print port
             ports = yield server.list_serial_ports()
-            #print(ports)
+            print ports
             if port not in ports:
                 continue
-            devName = '%s (%s)' % (name, port)
+            devName = '%s (%s)' % (serServer, port)
             devs += [(devName, (server, port))]
 
        # devs += [(0,(3,4))]
         returnValue(devs)
 
-
+    
     @setting(100)
     def connect(self,c,server,port):
         dev=self.selectedDevice(c)
@@ -232,7 +232,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(105,port='i',ivoltage='v',fvoltage='v',steps='i',delay='i',returns='s')
     def ramp1(self,c,port,ivoltage,fvoltage,steps,delay):
         """
-        RAMP1 ramps one channel from an initial voltage to a final voltage within an specified number steps and a delay (microseconds) between steps.
+        RAMP1 ramps one channel from an initial voltage to a final voltage within an specified number steps and a delay (microseconds) between steps. 
         When the execution finishes, it returns "RAMP_FINISHED".
         """
         dev=self.selectedDevice(c)
@@ -244,7 +244,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(106,port1='i',port2='i',ivoltage1='v',ivoltage2='v',fvoltage1='v',fvoltage2='v',steps='i',delay='i',returns='s')
     def ramp2(self,c,port1,port2,ivoltage1,ivoltage2,fvoltage1,fvoltage2,steps,delay):
         """
-        RAMP2 ramps one channel from an initial voltage to a final voltage within an specified number steps and a delay (microseconds) between steps. The # of steps is the total number of steps, not the number of steps per channel.
+        RAMP2 ramps one channel from an initial voltage to a final voltage within an specified number steps and a delay (microseconds) between steps. The # of steps is the total number of steps, not the number of steps per channel. 
         When the execution finishes, it returns "RAMP_FINISHED".
         """
         dev=self.selectedDevice(c)
@@ -256,7 +256,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
         """
-        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
+        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner. 
         It does it within an specified number steps and a delay (microseconds) between the update of the last output channel and the reading of the first input channel.
         """
         dacN = len(dacPorts)
@@ -267,7 +267,7 @@ class DAC_ADCServer(DeviceServer):
         sfvoltages = ""
 
 
-        for x in range(dacN):
+        for x in xrange(dacN):
             sdacPorts = sdacPorts + str(dacPorts[x])
             sivoltages = sivoltages + str(ivoltages[x]) + ","
             sfvoltages = sfvoltages + str(fvoltages[x]) + ","
@@ -275,7 +275,7 @@ class DAC_ADCServer(DeviceServer):
         sivoltages = sivoltages[:-1]
         sfvoltages = sfvoltages[:-1]
 
-        for x in range(adcN):
+        for x in xrange(adcN):
             sadcPorts = sadcPorts + str(adcPorts[x])
 
         dev = self.selectedDevice(c)
@@ -306,18 +306,18 @@ class DAC_ADCServer(DeviceServer):
 
             data = list(data)
 
-            for x in range(adcN):
+            for x in xrange(adcN):
                 channels.append([])
 
-            for x in range(0, len(data), 2):
+            for x in xrange(0, len(data), 2):
                 b1 = int(data[x].encode('hex'), 16)
                 b2 = int(data[x + 1].encode('hex'), 16)
                 decimal = twoByteToInt(b1, b2)
                 voltage = map2(decimal, 0, 65536, -10.0, 10.0)
                 voltages.append(voltage)
 
-            for x in range(0, steps * adcN, adcN):
-                for y in range(adcN):
+            for x in xrange(0, steps * adcN, adcN):
+                for y in xrange(adcN):
                     try:
                         channels[y].append(voltages[x + y])
                     except IndexError:
@@ -333,10 +333,10 @@ class DAC_ADCServer(DeviceServer):
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp_dis(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,adcSteps,nReadings=1):
         """
-        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
+        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner. 
         It does it within an specified number steps and a delay (microseconds) between the update of the last output channel and the reading of the first input channel.
         """
-
+        
         if adcSteps>steps:
             raise ValueError('steps must be larger than adcSteps.')
 
@@ -348,15 +348,15 @@ class DAC_ADCServer(DeviceServer):
         sfvoltages = ""
 
 
-        for x in range(dacN):
+        for x in xrange(dacN):
             sdacPorts = sdacPorts + str(dacPorts[x])
             sivoltages = sivoltages + str(ivoltages[x]) + ","
             sfvoltages = sfvoltages + str(fvoltages[x]) + ","
 
         sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
+        sfvoltages = sfvoltages[:-1]    
 
-        for x in range(adcN):
+        for x in xrange(adcN):
             sadcPorts = sadcPorts + str(adcPorts[x])
 
         dev = self.selectedDevice(c)
@@ -386,18 +386,18 @@ class DAC_ADCServer(DeviceServer):
 
             data = list(data)
 
-            for x in range(adcN):
+            for x in xrange(adcN):
                 channels.append([])
 
-            for x in range(0, len(data), 2):
+            for x in xrange(0, len(data), 2):
                 b1 = int(data[x].encode('hex'), 16)
                 b2 = int(data[x + 1].encode('hex'), 16)
                 decimal = twoByteToInt(b1, b2)
                 voltage = map2(decimal, 0, 65536, -10.0, 10.0)
                 voltages.append(voltage)
 
-            for x in range(0, totalbytes/2, adcN):
-                for y in range(adcN):
+            for x in xrange(0, totalbytes/2, adcN):
+                for y in xrange(adcN):
                     try:
                         channels[y].append(voltages[x + y])
                     except IndexError:
@@ -414,7 +414,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(109,channel='i',time='v[]',returns='v[]')
     def set_conversionTime(self,c,channel,time):
         """
-        CONVERT_TIME sets the conversion time for the ADC. The conversion time is the time the ADC takes to convert the analog signal to a digital signal.
+        CONVERT_TIME sets the conversion time for the ADC. The conversion time is the time the ADC takes to convert the analog signal to a digital signal. 
         Keep in mind that the smaller the conversion time, the more noise your measurements will have. Maximum conversion time: 2686 microseconds. Minimum conversion time: 82 microseconds.
         """
         if not (channel in self.channels):
@@ -467,10 +467,10 @@ class DAC_ADCServer(DeviceServer):
         dev=self.selectedDevice(c)
         yield dev.write("STOP\r")
         dev.setramping(False)
-
+        
         #Let ramps finish up
         yield self.sleep(0.25)
-
+        
         #Read remaining bytes if somehow some are left over
         bytestoread = yield dev.in_waiting()
         if bytestoread >0:
@@ -486,7 +486,7 @@ class DAC_ADCServer(DeviceServer):
         yield dev.write("DAC_CH_CAL\r")
         ans = yield dev.read()
         returnValue(ans)
-
+        
     @setting(115,returns='s')
     def adc_zero_sc_calibration(self,c):
         """
@@ -561,7 +561,7 @@ class DAC_ADCServer(DeviceServer):
         ans = [0]*8
         for i in range(8):
             ans[i] = yield dev.read()
-
+        
         returnValue(ans)
 
     @setting(122)
@@ -574,7 +574,7 @@ class DAC_ADCServer(DeviceServer):
         ans = [0]*8
         for i in range(8):
             ans[i] = yield dev.read()
-
+        
         returnValue(ans)
 
 
@@ -606,6 +606,18 @@ class DAC_ADCServer(DeviceServer):
         self.sigOutputSet([str(channel),code])
         returnValue(ans)
 
+    @setting(125,channel='i')
+    def read_dac_voltage(self,c,channel):
+        """
+        GET_DAC returns the most recent value to which the provided channel was set. 
+        """
+        if not (channel in range(4)):
+            returnValue("Error: invalid port number.")
+        dev = self.selectedDevice(c)
+        yield dev.write("GET_DAC,%i\r"%(channel))
+        ans = yield dev.read()
+        returnValue(ans)
+
     @setting(9002)
     def read(self,c):
         dev=self.selectedDevice(c)
@@ -623,7 +635,7 @@ class DAC_ADCServer(DeviceServer):
         yield dev.write(phrase)
         ret = yield dev.read()
         returnValue(ret)
-
+    
     @setting(9005,time='v[s]')
     def timeout(self,c,time):
         dev=self.selectedDevice(c)
@@ -643,7 +655,7 @@ class DAC_ADCServer(DeviceServer):
         d = defer.Deferred()
         reactor.callLater(secs,d.callback,'Sleeping')
         return d
-
+            
     # GET_DAC hasn't been added to the DAC ADC code yet
     # @setting(9101)
     # def send_get_dac_requests(self,c):
