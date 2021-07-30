@@ -2,7 +2,7 @@ import base64
 import collections
 import datetime
 import os
-#import re
+import re
 import sys
 import time
 
@@ -48,7 +48,7 @@ def labrad_urlencode(data):
     else:
         data_bytes, t = T.flatten(data)
         all_bytes, _ = T.flatten((str(t), data_bytes), 'ss')
-    data_url = DATA_URL_PREFIX + base64.urlsafe_b64encode(all_bytes)
+    data_url = DATA_URL_PREFIX + str(base64.urlsafe_b64encode(all_bytes))
     return data_url
 
 def labrad_urldecode(data_url):
@@ -56,6 +56,8 @@ def labrad_urldecode(data_url):
         # decode parameter data from dataurl
         all_bytes = base64.urlsafe_b64decode(data_url[len(DATA_URL_PREFIX):])
         t, data_bytes = T.unflatten(all_bytes, 'ss')
+        if isinstance(data_bytes, str):
+            data_bytes = data_bytes.encode('utf-8')
         data = T.unflatten(data_bytes, t)
         return data
     else:
@@ -819,7 +821,7 @@ class SimpleHDF5Data(HDF5MetaData):
         return pos < len(self)
 
 def open_hdf5_file(filename):
-    """Factory for HDF5 files.
+    """Factory for HDF5 files.  
 
     We check the version of the file to construct the proper class.  Currently, only two
     options exist: version 2.0.0 -> legacy format, 3.0.0 -> extended format.
