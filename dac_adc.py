@@ -97,9 +97,9 @@ class DAC_ADCWrapper(DeviceWrapper):
     @inlineCallbacks
     def readByte(self,count):
         p=self.packet()
-        p.read(count)
+        p.readbyte(count)
         ans=yield p.send()
-        returnValue(ans.read)
+        returnValue(ans.readbyte)
 
     @inlineCallbacks
     def in_waiting(self):
@@ -284,7 +284,7 @@ class DAC_ADCServer(DeviceServer):
 
         voltages = []
         channels = []
-        data = ''
+        data = b''
 
         dev.setramping(True)
         try:
@@ -310,9 +310,11 @@ class DAC_ADCServer(DeviceServer):
                 channels.append([])
 
             for x in range(0, len(data), 2):
-                b1 = int(data[x].encode('hex'), 16)
-                b2 = int(data[x + 1].encode('hex'), 16)
-                decimal = twoByteToInt(b1, b2)
+                # The python 2 way
+                # b1 = int(data[x].encode('hex'), 16)
+                # b2 = int(data[x + 1].encode('hex'), 16)
+                # decimal = twoByteToInt(b1, b2)
+                decimal = twoByteToInt(data[x], data[x + 1])
                 voltage = map2(decimal, 0, 65536, -10.0, 10.0)
                 voltages.append(voltage)
 
@@ -390,9 +392,11 @@ class DAC_ADCServer(DeviceServer):
                 channels.append([])
 
             for x in range(0, len(data), 2):
-                b1 = int(data[x].encode('hex'), 16)
-                b2 = int(data[x + 1].encode('hex'), 16)
-                decimal = twoByteToInt(b1, b2)
+                # The python 2 way
+                # b1 = int(data[x].encode('hex'), 16)
+                # b2 = int(data[x + 1].encode('hex'), 16)
+                # decimal = twoByteToInt(b1, b2)
+                decimal = twoByteToInt(data[x], data[x + 1])
                 voltage = map2(decimal, 0, 65536, -10.0, 10.0)
                 voltages.append(voltage)
 

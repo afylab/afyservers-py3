@@ -305,7 +305,12 @@ class SerialServer(LabradServer):
         """Reads data from the port."""
         recd = yield self.readSome(c, count)
         if not isinstance(recd, str):
-            recd = recd.decode("utf-8")
+            try:
+                recd = recd.decode("utf-8")
+            except UnicodeDecodeError:
+                print("Error: Unicode decoding error: ",recd)
+                print("Byte ignored to not crash the process.")
+                recd = recd.decode("utf-8","ignore")
         return recd
 
     @setting(51, 'Read as Words',
@@ -345,6 +350,31 @@ class SerialServer(LabradServer):
         if not isinstance(recd, str):
             recd = recd.decode("utf-8")
         returnValue(recd)
+    
+    @setting(53, 'In Waiting',
+             returns=['w: Bytes in input buffer'])
+    def in_waiting(self, c):
+        """Returns the number of bytes in the input buffer."""
+        ser = self.getPort(c)
+        #ans = ser.inWaiting() # Syntax deprecated in v3.0 of pyserial
+        ans = ser.in_waiting
+        return ans
+
+    @setting(54, 'Reset Input Buffer')
+    def reset_input_buffer(self, c):
+        """
+        Flush input buffer, discarding all it's contents.
+        """
+        ser = self.getPort(c)
+        ser.reset_input_buffer()
+
+    @setting(55, 'readByte', count=[': Read all bytes in buffer',
+                                'w: Read this many bytes'],
+             returns=['y: Received data as bytes'])
+    def readByte(self, c, count=0):
+        """Reads data from the port."""
+        recd = yield self.readSome(c, count)
+        return recd
 
 
 __server__ = SerialServer()
