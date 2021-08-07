@@ -98,7 +98,7 @@ class LakeShore350Wrapper(DeviceWrapper):
 class LakeShore350Server(DeviceServer):
     name = 'lakeshore_350'
     deviceName = 'Lake Shore 350 temperature controller'
-    deviceWrapper = LakeShore350Wrapper
+    deviceWrapper = LakeShore350Wrapper 
 
     @inlineCallbacks
     def initServer(self):

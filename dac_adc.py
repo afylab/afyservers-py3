@@ -328,7 +328,10 @@ class DAC_ADCServer(DeviceServer):
         except KeyboardInterrupt:
             print('Stopped')
 
-        yield dev.read()
+        try:
+            yield dev.read()
+        except:
+            print("Error clearing teh serial buffer after buffer_ramp")
 
         returnValue(channels)
 
@@ -367,7 +370,7 @@ class DAC_ADCServer(DeviceServer):
 
         voltages = []
         channels = []
-        data = ''
+        data = b''
         dev.setramping(True)
         try:
             nbytes = 0
@@ -400,7 +403,7 @@ class DAC_ADCServer(DeviceServer):
                 voltage = map2(decimal, 0, 65536, -10.0, 10.0)
                 voltages.append(voltage)
 
-            for x in range(0, totalbytes/2, adcN):
+            for x in range(0, totalbytes//2, adcN):
                 for y in range(adcN):
                     try:
                         channels[y].append(voltages[x + y])
@@ -411,7 +414,10 @@ class DAC_ADCServer(DeviceServer):
             print('Stopped')
 
         #Reads BUFFER_RAMP_FINISHED
-        yield dev.read()
+        try:
+            yield dev.read()
+        except:
+            print("Error clearing the serial buffer after buffer_ramp")
 
         returnValue(channels)
 
@@ -620,7 +626,7 @@ class DAC_ADCServer(DeviceServer):
         dev = self.selectedDevice(c)
         yield dev.write("GET_DAC,%i\r"%(channel))
         ans = yield dev.read()
-        returnValue(ans)
+        returnValue(float(ans))
 
     @setting(9002)
     def read(self,c):

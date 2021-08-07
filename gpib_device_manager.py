@@ -112,7 +112,7 @@ class GPIBDeviceManager(LabradServer):
         if (gpibBusServer, channel) in self.knownDevices:
             return
         device, idnResult = yield self.lookupDeviceName(gpibBusServer, channel)
-        
+        print(device, idnResult)
         # There is a bytes conversion issue when looking up the name. Device name is read out with
         # "b'" at the front. Need to remove the extra characters.
         if device.startswith("b'"):
