@@ -250,8 +250,9 @@ class SerialServer(LabradServer):
     def write_line(self, c, data):
         """Sends data over the port appending CR LF."""
         ser = self.getPort(c)
+        data = data + '\r\n'
         data = data.encode("latin-1")
-        ser.write(data + '\r\n')
+        ser.write(data)
         return long(len(data)+2)
 
     @inlineCallbacks
@@ -348,9 +349,14 @@ class SerialServer(LabradServer):
             if r != skip:
                 recd += r
         if not isinstance(recd, str):
-            recd = recd.decode("utf-8")
+            try:
+                recd = recd.decode("utf-8")
+            except UnicodeDecodeError:
+                print("Error: Unicode decoding error: ",recd)
+                print("Byte ignored to not crash the process.")
+                recd = recd.decode("utf-8","ignore")
         returnValue(recd)
-    
+
     @setting(53, 'In Waiting',
              returns=['w: Bytes in input buffer'])
     def in_waiting(self, c):
