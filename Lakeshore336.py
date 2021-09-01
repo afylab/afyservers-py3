@@ -16,7 +16,7 @@
 """
 ### BEGIN NODE INFO
 [info]
-name = Lake Shore 350 temperature controller
+name = Lake Shore 336 temperature controller
 version = 1.0
 description =
 [startup]
@@ -44,7 +44,7 @@ PARITY = 'O'
 STOP_BITS = 1
 BYTESIZE= 7
 
-class LakeShore350Wrapper(DeviceWrapper):
+class LakeShore336Wrapper(DeviceWrapper):
 
     @inlineCallbacks
     def connect(self, server, port):
@@ -77,22 +77,6 @@ class LakeShore350Wrapper(DeviceWrapper):
     def write(self, code):
         """Write a data value to the temperature controller."""
         yield self.packet().write(code).send()
-
-    @inlineCallbacks
-    def read(self):
-        p=self.packet()
-        p.read_line()
-        ans=yield p.send()
-        returnValue(ans.read_line)
-
-    @inlineCallbacks
-    def query(self, code):
-        """ Write, then read. """
-        p = self.packet()
-        p.write_line(code)
-        p.read_line()
-        ans = yield p.send()
-        returnValue(ans.read_line)
 
     @inlineCallbacks
     def range_set(self, output, range):
@@ -130,11 +114,27 @@ class LakeShore350Wrapper(DeviceWrapper):
         ans = yield self.query("OUTMODE?%i" %output)
         returnValue(ans)
 
+    @inlineCallbacks
+    def read(self):
+        p=self.packet()
+        p.read_line()
+        ans=yield p.send()
+        returnValue(ans.read_line)
 
-class LakeShore350Server(DeviceServer):
-    name = 'lakeshore_350'
-    deviceName = 'Lake Shore 350 temperature controller'
-    deviceWrapper = LakeShore350Wrapper
+    @inlineCallbacks
+    def query(self, code):
+        """ Write, then read. """
+        p = self.packet()
+        p.write_line(code)
+        p.read_line()
+        ans = yield p.send()
+        returnValue(ans.read_line)
+
+
+class LakeShore336Server(DeviceServer):
+    name = 'lakeshore_336'
+    deviceName = 'Lake Shore 336 temperature controller'
+    deviceWrapper = LakeShore336Wrapper
 
     @inlineCallbacks
     def initServer(self):
@@ -155,8 +155,10 @@ class LakeShore350Server(DeviceServer):
         # ans = yield p.send()
         # self.serialLinks = ans['links']
         reg = self.reg
-        yield reg.cd(['', 'Servers', 'LakeShore350', 'Links'], True)
+        yield reg.cd(['', 'Servers', 'LakeShore336', 'Links'], True)
         dirs, keys = yield reg.dir()
+        print(dirs) # DEBUG
+        print(keys) # DEBUG
         p = reg.packet()
         print(" created packet")
         print("printing all the keys",keys)
@@ -345,6 +347,7 @@ class LakeShore350Server(DeviceServer):
     def write(self,c,phrase):
         dev=self.selectedDevice(c)
         yield dev.write(phrase)
+
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)
@@ -353,7 +356,7 @@ class LakeShore350Server(DeviceServer):
         returnValue(ret)
 
 
-__server__ = LakeShore350Server()
+__server__ = LakeShore336Server()
 
 if __name__ == '__main__':
     from labrad import util
