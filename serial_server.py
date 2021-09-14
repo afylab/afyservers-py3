@@ -237,7 +237,7 @@ class SerialServer(LabradServer):
                        '*w: Byte-data to send'],
                  returns=['w: Bytes sent'])
     def write(self, c, data):
-        """Sends data over the port."""
+        """Sends data over the port. No end of line character."""
         ser = self.getPort(c)
         data = data.encode("latin-1")
         if isinstance(data, list):
@@ -299,7 +299,7 @@ class SerialServer(LabradServer):
             recd += r
         returnValue(recd)
 
-    @setting(50, 'Read', count=[': Read all bytes in buffer',
+    @setting(50, 'Read', count=[': Read bytes from buffer',
                                 'w: Read this many bytes'],
              returns=['s: Received data'])
     def read(self, c, count=0):
@@ -374,7 +374,7 @@ class SerialServer(LabradServer):
         ser = self.getPort(c)
         ser.reset_input_buffer()
 
-    @setting(55, 'readByte', count=[': Read all bytes in buffer',
+    @setting(55, 'readByte', count=[': Read some number of bytes and return as bytes',
                                 'w: Read this many bytes'],
              returns=['y: Received data as bytes'])
     def readByte(self, c, count=0):
@@ -382,9 +382,21 @@ class SerialServer(LabradServer):
         recd = yield self.readSome(c, count)
         return recd
 
+    @setting(56, 'readBuffer', returns=['?: Received data'])
+    def readBuffer(self, c):
+        """Reads all the data from the input buffer."""
+        ser = self.getPort(c)
+        recd = ser.read(ser.in_waiting)
+        if not isinstance(recd, str):
+            try:
+                recd = recd.decode("utf-8")
+            except UnicodeDecodeError:
+                print("Error: Unicode decoding error: ",recd)
+                print("Byte ignored to not crash the process.")
+                recd = recd.decode("utf-8","ignore")
+        return recd
 
 __server__ = SerialServer()
 
 if __name__ == '__main__':
-    from labrad import util
     util.runServer(__server__)

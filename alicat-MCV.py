@@ -16,7 +16,7 @@
 """
 ### BEGIN NODE INFO
 [info]
-name = Convectron 475
+name = Alicat MCV
 version = 1.0
 description =
 [startup]
@@ -35,15 +35,16 @@ serial_server_name = platform.node() + '_serial_server'
 from labrad.server import setting
 from labrad.devices import DeviceServer,DeviceWrapper
 from twisted.internet.defer import inlineCallbacks, returnValue
-import labrad.units as units
+# import labrad.units as units
 from labrad.types import Value
 
 TIMEOUT = Value(5,'s')
 BAUD = 19200
+BYTESIZE = 8
+STOPBITS = 1
+PARITY = 0
 
-
-class Convectron475Wrapper(DeviceWrapper):
-
+class alicatMCVWrapper(DeviceWrapper):
     @inlineCallbacks
     def connect(self, server, port):
         """Connect to a device."""
@@ -55,7 +56,7 @@ class Convectron475Wrapper(DeviceWrapper):
         p.open(port)
         print('opened on port "%s"' %self.port)
         p.baudrate(BAUD)
-        p.read()  # clear out the read buffer
+        p.readbuffer()  # clear out the read buffer
         p.timeout(TIMEOUT)
         print(" CONNECTED ")
         yield p.send()
@@ -76,27 +77,31 @@ class Convectron475Wrapper(DeviceWrapper):
     @inlineCallbacks
     def read(self):
         p=self.packet()
-        p.read_line()
+        p.readbuffer()
         ans=yield p.send()
-        returnValue(ans.read_line)
+        returnValue(ans.readbuffer)
 
     @inlineCallbacks
     def query(self, code):
         """ Write, then read. """
         p = self.packet()
-        p.write_line(code)
-        p.read_line()
+        p.write(code)
+        p.readbuffer()
         ans = yield p.send()
-        returnValue(ans.read_line)
+        returnValue(ans.readbuffer)
 
-
-class Convectron475Server(DeviceServer):
-    name = 'Convectron 475'
-    deviceName = 'Convectron 475'
-    deviceWrapper = Convectron475Wrapper
+class AlicatMCVServer(DeviceServer):
+    name = 'Alicat_MCV'
+    deviceName = 'Alicat_MCV'
+    deviceWrapper = alicatMCVWrapper
 
     @inlineCallbacks
     def initServer(self):
+        self.pressure = 0
+        self.temperature = 0
+        self.vol_flow = 0
+        self.mass_flow = 0
+        self.gas = ''
         print('loading config info...', end=' ')
         self.reg = self.client.registry()
         yield self.loadConfigInfo()
@@ -107,14 +112,8 @@ class Convectron475Server(DeviceServer):
     @inlineCallbacks
     def loadConfigInfo(self):
         """Load configuration information from the registry."""
-        # reg = self.client.registry
-        # p = reg.packet()
-        # p.cd(['', 'Servers', 'Heat Switch'], True)
-        # p.get('Serial Links', '*(ss)', key='links')
-        # ans = yield p.send()
-        # self.serialLinks = ans['links']
         reg = self.reg
-        yield reg.cd(['', 'Servers', '475 Convectron', 'Links'], True)
+        yield reg.cd(['', 'Servers', 'Alicat', 'Links'], True)
         dirs, keys = yield reg.dir()
         p = reg.packet()
         print(" created packet")
@@ -132,16 +131,6 @@ class Convectron475Server(DeviceServer):
     def findDevices(self):
         """Find available devices from list stored in the registry."""
         devs = []
-        # for name, port in self.serialLinks:
-        # if name not in self.client.servers:
-        # continue
-        # server = self.client[name]
-        # ports = yield server.list_serial_ports()
-        # if port not in ports:
-        # continue
-        # devName = '%s - %s' % (name, port)
-        # devs += [(devName, (server, port))]
-        # returnValue(devs)
         for name, (serServer, port) in list(self.serialLinks.items()):
             if serServer not in self.client.servers:
                 continue
@@ -154,8 +143,6 @@ class Convectron475Server(DeviceServer):
                 continue
             devName = '%s - %s' % (serServer, port)
             devs += [(devName, (server, port))]
-
-        # devs += [(0,(3,4))]
         returnValue(devs)
 
     @setting(100)
@@ -164,53 +151,83 @@ class Convectron475Server(DeviceServer):
         yield dev.connect(server,port)
 
     @setting(101, returns='s')
-    def read_pressure(self,c):
-        """Read Convectron Gauge pressure response."""
+    def poll(self,c):
+        """Read data from the Alicat.
+        Response: Sensor_Num Abs_Pressure Temperature Vol_Flow Mass_Flow Setpoint Gas
+
+        Responses have + in front of them normally that needs to be stripped.
+        """
+        try:
+            dev=self.selectedDevice(c)
+            ans = yield dev.query("a\r")
+            ans = ans.split()
+            self.pressure = float(ans[1])
+            self.temperature = float(ans[2])
+            self.vol_flow = float(ans[3])
+            self.mass_flow = float(ans[4])
+            self.setpoint = float(ans[5])
+            self.gas = str(ans[6])
+        except:
+            print("Could not read data")
+        returnValue(str(ans))
+
+    @setting(102, returns='?')
+    def get_pressure(self,c):
+        '''
+        Poll the device and get the absolute pressure. Normally in PSIA
+        '''
+        yield self.poll(c)
+        returnValue(self.pressure)
+
+    @setting(103, returns='?')
+    def get_temperature(self,c):
+        '''
+        Poll the device and get the temperature. Normally in C.
+        '''
+        yield self.poll(c)
+        returnValue(self.temperature)
+
+    @setting(104, returns='?')
+    def get_vol_flow(self,c):
+        '''
+        Poll the device and get the volumetric flow. Normally in CCM.
+        '''
+        yield self.poll(c)
+        returnValue(self.vol_flow)
+
+    @setting(105, returns='?')
+    def get_mass_flow(self,c):
+        '''
+        Poll the device and get the mass flow. Normally in SCCM.
+        '''
+        yield self.poll(c)
+        returnValue(self.mass_flow)
+
+    @setting(106, returns='?')
+    def get_setpoint(self,c):
+        '''
+        Poll the device and get the setpoint. Normally in SCCM.
+        '''
+        yield self.poll(c)
+        returnValue(self.setpoint)
+
+    @setting(107, returns='?')
+    def get_gas_setting(self,c):
+        '''
+        Poll the device and get the currently configured gas.
+        '''
+        yield self.poll(c)
+        returnValue(self.gas)
+
+    @setting(109, value='v', returns='?')
+    def set_setpoint(self,c,value):
+        '''
+        Change the setpoint. Units usually in SCCM
+        '''
         dev=self.selectedDevice(c)
-        yield dev.write("RD\r")
-        ans = yield dev.read()
-        returnValue(ans)
+        yield dev.write("as"+str(value)+"\r")
 
-    @setting(102, returns='s')
-    def id(self, c):
-        """Get the serial number of the 475 Controller."""
-        dev = self.selectedDevice(c)
-        yield dev.write("SN\r")
-        ans = yield dev.read()
-        returnValue(ans)
-
-    @setting(103, returns='s')
-    def id(self, c):
-        """Identifies the selected units of pressure."""
-        dev = self.selectedDevice(c)
-        yield dev.write("RU\r")
-        ans = yield dev.read()
-        returnValue(ans)
-
-    @setting(9001, v='v')
-    def do_nothing(self,c,v):
-        pass
-
-    @setting(9002)
-    def read(self, c):
-        dev=self.selectedDevice(c)
-        ret=yield dev.read()
-        returnValue(ret)
-
-    @setting(9003)
-    def write(self, c, phrase):
-        dev=self.selectedDevice(c)
-        yield dev.write(phrase)
-
-    @setting(9004)
-    def query(self,c,phrase):
-        dev=self.selectedDevice(c)
-        yield dev.write(phrase)
-        ret = yield dev.read()
-        returnValue(ret)
-
-
-__server__ = Convectron475Server()
+__server__ = AlicatMCVServer()
 
 if __name__ == '__main__':
     from labrad import util
