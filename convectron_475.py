@@ -180,7 +180,7 @@ class Convectron475Server(DeviceServer):
         returnValue(ans)
 
     @setting(103, returns='s')
-    def id(self, c):
+    def units(self, c):
         """Identifies the selected units of pressure."""
         dev = self.selectedDevice(c)
         yield dev.write("RU\r")
