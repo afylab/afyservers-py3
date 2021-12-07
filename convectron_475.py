@@ -35,12 +35,10 @@ serial_server_name = platform.node() + '_serial_server'
 from labrad.server import setting
 from labrad.devices import DeviceServer,DeviceWrapper
 from twisted.internet.defer import inlineCallbacks, returnValue
-import labrad.units as units
 from labrad.types import Value
 
-TIMEOUT = Value(5,'s')
+TIMEOUT = Value(2,'s')
 BAUD = 19200
-
 
 class Convectron475Wrapper(DeviceWrapper):
 
@@ -55,7 +53,7 @@ class Convectron475Wrapper(DeviceWrapper):
         p.open(port)
         print('opened on port "%s"' %self.port)
         p.baudrate(BAUD)
-        p.read()  # clear out the read buffer
+        p.readbuffer()  # clear out the read buffer
         p.timeout(TIMEOUT)
         print(" CONNECTED ")
         yield p.send()
@@ -75,19 +73,22 @@ class Convectron475Wrapper(DeviceWrapper):
 
     @inlineCallbacks
     def read(self):
+        '''
+        Read out whatever is in the buffer
+        '''
         p=self.packet()
-        p.read_line()
+        p.readbuffer()
         ans=yield p.send()
-        returnValue(ans.read_line)
+        returnValue(ans.readbuffer.rstrip())
 
     @inlineCallbacks
     def query(self, code):
         """ Write, then read. """
         p = self.packet()
-        p.write_line(code)
-        p.read_line()
+        p.write(code+"\r")
+        p.readbuffer()
         ans = yield p.send()
-        returnValue(ans.read_line)
+        returnValue(ans.readbuffer.rstrip())
 
 
 class Convectron475Server(DeviceServer):
@@ -107,12 +108,6 @@ class Convectron475Server(DeviceServer):
     @inlineCallbacks
     def loadConfigInfo(self):
         """Load configuration information from the registry."""
-        # reg = self.client.registry
-        # p = reg.packet()
-        # p.cd(['', 'Servers', 'Heat Switch'], True)
-        # p.get('Serial Links', '*(ss)', key='links')
-        # ans = yield p.send()
-        # self.serialLinks = ans['links']
         reg = self.reg
         yield reg.cd(['', 'Servers', '475 Convectron', 'Links'], True)
         dirs, keys = yield reg.dir()
@@ -132,16 +127,6 @@ class Convectron475Server(DeviceServer):
     def findDevices(self):
         """Find available devices from list stored in the registry."""
         devs = []
-        # for name, port in self.serialLinks:
-        # if name not in self.client.servers:
-        # continue
-        # server = self.client[name]
-        # ports = yield server.list_serial_ports()
-        # if port not in ports:
-        # continue
-        # devName = '%s - %s' % (name, port)
-        # devs += [(devName, (server, port))]
-        # returnValue(devs)
         for name, (serServer, port) in list(self.serialLinks.items()):
             if serServer not in self.client.servers:
                 continue
@@ -154,8 +139,6 @@ class Convectron475Server(DeviceServer):
                 continue
             devName = '%s - %s' % (serServer, port)
             devs += [(devName, (server, port))]
-
-        # devs += [(0,(3,4))]
         returnValue(devs)
 
     @setting(100)
@@ -167,29 +150,15 @@ class Convectron475Server(DeviceServer):
     def read_pressure(self,c):
         """Read Convectron Gauge pressure response."""
         dev=self.selectedDevice(c)
-        yield dev.write("RD\r")
-        ans = yield dev.read()
+        ans = yield dev.query("RD")
         returnValue(ans)
 
     @setting(102, returns='s')
     def id(self, c):
         """Get the serial number of the 475 Controller."""
         dev = self.selectedDevice(c)
-        yield dev.write("SN\r")
-        ans = yield dev.read()
+        ans = yield dev.query("SN")
         returnValue(ans)
-
-    @setting(103, returns='s')
-    def id(self, c):
-        """Identifies the selected units of pressure."""
-        dev = self.selectedDevice(c)
-        yield dev.write("RU\r")
-        ans = yield dev.read()
-        returnValue(ans)
-
-    @setting(9001, v='v')
-    def do_nothing(self,c,v):
-        pass
 
     @setting(9002)
     def read(self, c):
@@ -205,10 +174,8 @@ class Convectron475Server(DeviceServer):
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)
-        yield dev.write(phrase)
-        ret = yield dev.read()
+        ret = yield dev.query(phrase)
         returnValue(ret)
-
 
 __server__ = Convectron475Server()
 
