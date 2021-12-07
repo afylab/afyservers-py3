@@ -102,7 +102,7 @@ class StepperWrapper(DeviceWrapper):
 
 class StepperServer(DeviceServer):
     name             = 'Stepper_Server'
-    deviceName       = 'Evaporator Stepper Motor Controller'
+    deviceName       = 'Stepper Motor Controller'
     deviceWrapper    = StepperWrapper
 
     @inlineCallbacks
@@ -118,7 +118,7 @@ class StepperServer(DeviceServer):
     @inlineCallbacks
     def loadConfigInfo(self):
         reg = self.reg
-        yield reg.cd(['', 'Servers', 'Evaporator Stepper', 'Links'], True)
+        yield reg.cd(['', 'Servers', 'Stepper Motor', 'Links'], True)
         dirs, keys = yield reg.dir()
         p = reg.packet()
         print("Created packet")
@@ -127,7 +127,7 @@ class StepperServer(DeviceServer):
             print("k=",k)
             p.get(k, key=k)
         ans = yield p.send()
-        print("ans=",ans)
+        #print("ans=",ans)
         self.serialLinks = dict((k, ans[k]) for k in keys)
 
     @inlineCallbacks
@@ -136,7 +136,7 @@ class StepperServer(DeviceServer):
         for name, (serServer, port) in list(self.serialLinks.items()):
             if serServer not in self.client.servers:
                 print(serServer)
-                print(self.client.servers)
+                #print(self.client.servers)
                 continue
             server = self.client[serServer]
             ports = yield server.list_serial_ports()
