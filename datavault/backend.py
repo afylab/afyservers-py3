@@ -48,11 +48,23 @@ def labrad_urlencode(data):
     else:
         data_bytes, t = T.flatten(data)
         all_bytes, _ = T.flatten((str(t), data_bytes), 'ss')
-    data_url = DATA_URL_PREFIX + str(base64.urlsafe_b64encode(all_bytes))
+
+    # Python 2 way, directly convert the bytes from urlsafe_b64encode to string adds
+    # extraneous characters in python 3 causing bugs when it is read in.
+    # data_url = DATA_URL_PREFIX + str(base64.urlsafe_b64encode(all_bytes))
+    #
+    # For Python 3 use:
+    data_url = DATA_URL_PREFIX + base64.urlsafe_b64encode(all_bytes).decode()
     return data_url
 
 def labrad_urldecode(data_url):
     if data_url.startswith(DATA_URL_PREFIX):
+        if "b'" in data_url:
+            # Fixes an issue where parameters were not properly encoded before being
+            # added to the urlsafe string, as such it was encoded as b'foo' instead of foo
+            # This bug was corrected but this should allow parameters to be read from
+            # data sets made before the fix was implemented.
+            data_url = data_url.replace("b'","").replace("'","")
         # decode parameter data from dataurl
         all_bytes = base64.urlsafe_b64decode(data_url[len(DATA_URL_PREFIX):])
         t, data_bytes = T.unflatten(all_bytes, 'ss')
@@ -821,7 +833,7 @@ class SimpleHDF5Data(HDF5MetaData):
         return pos < len(self)
 
 def open_hdf5_file(filename):
-    """Factory for HDF5 files.  
+    """Factory for HDF5 files.
 
     We check the version of the file to construct the proper class.  Currently, only two
     options exist: version 2.0.0 -> legacy format, 3.0.0 -> extended format.
