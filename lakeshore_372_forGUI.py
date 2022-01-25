@@ -239,15 +239,15 @@ class LakeShore372Server(DeviceServer):
         dev=self.selectedDevice(c)
 
         if setpt is None:
-        	yield dev.write("KRDG? 6\n")
-        	ans = yield dev.read()
-        	returnValue(ans)
+            yield dev.write("KRDG? 6\n")
+            ans = yield dev.read()
+            returnValue(ans)
        	else:
-       		#this is not setup to work yet
-       		yield dev.write("SETP 0,%s\n"%setpt)
-       		yield dev.write("SETP? 0\n")
-       		ans = yield dev.read()
-       		returnValue(float(ans))
+            #this is not setup to work yet
+            yield dev.write("SETP 0,%s\n"%setpt)
+            yield dev.write("SETP? 0\n")
+            ans = yield dev.read()
+            returnValue(float(ans))
 
 
     @setting(111, returns='v', setpt='v')
@@ -255,20 +255,20 @@ class LakeShore372Server(DeviceServer):
         dev=self.selectedDevice(c)
 
         if setpt is None:
-        	yield dev.write("KRDG? 9\n")
-        	ans = yield dev.read()
-        	returnValue(ans)
+            yield dev.write("KRDG? 9\n")
+            ans = yield dev.read()
+            returnValue(ans)
        	else:
-       		#this is not setup to work yet
-       		yield dev.write("SETP 0,%s\n"%setpt)
-       		yield dev.write("SETP? 0\n")
-       		ans = yield dev.read()
-       		returnValue(float(ans))
+            #this is not setup to work yet
+            yield dev.write("SETP 0,%s\n"%setpt)
+            yield dev.write("SETP? 0\n")
+            ans = yield dev.read()
+            returnValue(float(ans))
 
     @setting(112)
     def htr_off(self,c):
-    	dev=self.selectedDevice(c)
-    	yield dev.write("SETP 0,0.0")
+        dev=self.selectedDevice(c)
+        yield dev.write("SETP 0,0.0")
         yield dev.write("HTRSET 0,0\n")
     
     @setting(113, in_channel='i')
