@@ -42,9 +42,9 @@ def getTC(i):
     elif i > 21:
         return getTC(21)
     elif i % 2 == 0:
-        return 10**(-6 + i/2)
+        return 10**(-6 + i//2)
     else:
-        return 3*10**(-6 + i/2)
+        return 3*10**(-6 + i//2)
 
 def getSensitivity(i):
     ''' converts form the integer label used by the SR860 to a sensitivity '''
@@ -53,11 +53,11 @@ def getSensitivity(i):
     elif i > 27:
         return getSensitivity(27)
     elif i % 3 == 0:
-        return 10**(-i/3)
+        return 10**(-i//3)
     elif i % 3 == 1:
-        return 5 * 10**(-i/3)
+        return 5 * 10**(-i//3)
     else:
-        return 2 * 10**(-i/3)
+        return 2 * 10**(-i//3)
 
 def getSensitivityInt(v, mode):
     ''' converty from real sensitivity to an integer value taken by the sr860'''

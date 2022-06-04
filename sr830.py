@@ -56,19 +56,19 @@ def getSensitivity(i, mode):
         return getSensitivity(26, mode)
     elif i % 3 == 0:
         if mode == 0 or mode == 1:
-            return 2 * 10**(-9 + i/3)
+            return 2 * 10**(-9 + i//3)
         else:
-            return 2 * 10**(-15 + i/3)
+            return 2 * 10**(-15 + i//3)
     elif i % 3 == 1:
         if mode == 0 or mode == 1:
-            return 5 * 10**(-9 + i/3)
+            return 5 * 10**(-9 + i//3)
         else:
-            return 5 * 10**(-15 + i/3)
+            return 5 * 10**(-15 + i//3)
     else:
         if mode == 0 or mode == 1:
-            return 10 * 10**(-9 + i/3)
+            return 10 * 10**(-9 + i//3)
         else:
-            return 10 * 10**(-15 + i/3)
+            return 10 * 10**(-15 + i//3)
     
 
 MODE_DICT = {
