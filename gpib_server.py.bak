@@ -115,23 +115,23 @@ class GPIBBusServer(LabradServer):
                         instName = addr + '::INSTR'
                     else:
                         continue
-                    instr = rm.open_resource(instName)
+                    instr = rm.get_instrument(instName)
                     instr.write_termination = ''
                     instr.clear()
                     if addr.endswith('SOCKET'):
                         instr.write_termination = '\n'
                     self.devices[addr] = instr
                     self.sendDeviceMessage('GPIB Device Connect', addr)
-                except Exception as e:
-                    print('Failed to add ' + addr + ':' + str(e))
+                except Exception, e:
+                    print 'Failed to add ' + addr + ':' + str(e)
             for addr in deletions:
                 del self.devices[addr]
                 self.sendDeviceMessage('GPIB Device Disconnect', addr)
-        except Exception as e:
-            print('Problem while refreshing devices:', str(e))
+        except Exception, e:
+            print 'Problem while refreshing devices:', str(e)
 
     def sendDeviceMessage(self, msg, addr):
-        print(msg + ': ' + addr)
+        print msg + ': ' + addr
         self.client.manager.send_named_message(msg, (self.name, addr))
 
     def initContext(self, c):
@@ -185,14 +185,13 @@ class GPIBBusServer(LabradServer):
     @setting(5, data='s', returns='s')
     def query(self, c, data):
         """Make a GPIB query, a write followed by a read.
+
         This query is atomic.  No other communication to the
         device will occur while the query is in progress.
         """
         instr = self.getDevice(c)
         instr.write(data)
         ans = instr.read_raw()
-        if isinstance(ans, bytes):
-            ans = ans.decode('utf-8') # convert from bytes without adding extra characters to string
         return str(ans).strip()
 
     @setting(6, data='s', returns='')
@@ -211,7 +210,7 @@ class GPIBBusServer(LabradServer):
         """
         instr = self.getDevice(c)
         ans = instr.read_bytes(n_bytes)
-        return ans
+        return ans.strip()
 
     @setting(20, returns='*s')
     def list_devices(self, c):
@@ -246,10 +245,10 @@ class GPIBBusServer(LabradServer):
                 instr.clear()
                 self.devices[address] = instr
                 self.sendDeviceMessage('GPIB Device Connect', address)
-            except Exception as e:
-                print(('Failed to add %s: %s' %(address, str(e))))
-        except Exception as e:
-            print(('Problem while adding device %s: %s' %(address, str(e))))
+            except Exception, e:
+                print('Failed to add %s: %s' %(address, str(e)))
+        except Exception, e:
+            print('Problem while adding device %s: %s' %(address, str(e)))
 
     @setting(104, address='s', returns='')
     def close_connection(self, c, address=None):

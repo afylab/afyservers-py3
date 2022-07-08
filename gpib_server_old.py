@@ -48,7 +48,7 @@ import pyvisa as visa
 ### BEGIN NODE INFO
 [info]
 name = GPIB Bus
-version = 1.3.2-no-refresh
+version = 1.5.0-no-refresh
 description = Gives access to GPIB devices via pyvisa.
 instancename = %LABRADNODE% GPIB Bus
 
@@ -61,6 +61,9 @@ message = 987654321
 timeout = 20
 ### END NODE INFO
 """
+
+
+KNOWN_DEVICE_TYPES = ('GPIB', 'TCPIP', 'USB')
 
 
 class GPIBBusServer(LabradServer):
@@ -107,15 +110,9 @@ class GPIBBusServer(LabradServer):
             deletions = set(self.devices.keys()) - set(addresses)
             for addr in additions:
                 try:
-                    if addr.startswith('GPIB'):
-                        instName = addr
-                    elif addr.startswith('TCPIP'):
-                        instName = addr
-                    elif addr.startswith('USB'):
-                        instName = addr + '::INSTR'
-                    else:
+                    if not addr.startswith(KNOWN_DEVICE_TYPES):
                         continue
-                    instr = rm.open_resource(instName)
+                    instr = rm.open_resource(addr) #rm.get_instrument(addr)
                     instr.write_termination = ''
                     instr.clear()
                     if addr.endswith('SOCKET'):
@@ -168,12 +165,19 @@ class GPIBBusServer(LabradServer):
         """Write a string to the GPIB bus."""
         self.getDevice(c).write(data)
 
+    @setting(8, data='y', returns='')
+    def write_raw(self, c, data):
+        """Write a string to the GPIB bus."""
+        self.getDevice(c).write_raw(data)
+
     @setting(4, n_bytes='w', returns='s')
     def read(self, c, n_bytes=None):
         """Read from the GPIB bus.
 
-        If specified, reads only the given number of bytes.
-        Otherwise, reads until the device stops sending.
+        Termination characters, if any, will be stripped.
+        This includes any bytes corresponding to termination in
+        binary data. If specified, reads only the given number
+        of bytes. Otherwise, reads until the device stops sending.
         """
         instr = self.getDevice(c)
         if n_bytes is None:
@@ -185,6 +189,7 @@ class GPIBBusServer(LabradServer):
     @setting(5, data='s', returns='s')
     def query(self, c, data):
         """Make a GPIB query, a write followed by a read.
+
         This query is atomic.  No other communication to the
         device will occur while the query is in progress.
         """
@@ -195,23 +200,20 @@ class GPIBBusServer(LabradServer):
             ans = ans.decode('utf-8') # convert from bytes without adding extra characters to string
         return str(ans).strip()
 
-    @setting(6, data='s', returns='')
-    def write_raw(self, c, data):
-        """Write bytes to the GPIB bus."""
-        assert isinstance(data, bytes)
-        instr = self.getDevice(c)
-        instr.write_raw(data)
+    @setting(7, n_bytes='w', returns='y')
+    def read_raw(self, c, n_bytes=None):
+        """Read raw bytes from the GPIB bus.
 
-    @setting(7, n_bytes='w', returns='s')
-    def read_bytes(self, c, n_bytes):
-        """Read specified number of bytes from the GPIB bus.
-
-        If specified, reads only the given number of bytes.
+        Termination characters, if any, will not be stripped.
+        If n_bytes is specified, reads only that many bytes.
         Otherwise, reads until the device stops sending.
         """
         instr = self.getDevice(c)
-        ans = instr.read_bytes(n_bytes)
-        return ans
+        if n_bytes is None:
+            ans = instr.read_raw()
+        else:
+            ans = instr.read_raw(n_bytes)
+        return bytes(ans)
 
     @setting(20, returns='*s')
     def list_devices(self, c):
@@ -223,53 +225,6 @@ class GPIBBusServer(LabradServer):
         """ manually refresh devices """
         self.refreshDevices()
 
-    @setting(101, 'Read Termination', termchars='s', returns='')
-    def read_termination(self, c, termchars=''):
-        """Set the end characters for the read operation."""
-        instr = self.getDevice(c)
-        instr.read_termination = termchars
-
-    @setting(102, 'Write Termination', termchars='s', returns='')
-    def write_termination(self, c, termchars=''):
-        """Set the end characters for the write operation."""
-        instr = self.getDevice(c)
-        instr.write_termination = termchars
-
-    @setting(103, 'Add GPIB Device', address='s', write_term='s', read_term='s', add_timeout='v', returns='')
-    def add_gpib_device(self, c, address=None, write_term='', read_term='', add_timeout=10.0):
-        """Add a GPIB device with a given address, read and write terminations."""
-        try:
-            self.rm = visa.ResourceManager()
-            try:
-                instr = self.rm.open_resource(address, read_termination=read_term,
-                        write_termination=write_term, open_timeout=add_timeout)
-                instr.clear()
-                self.devices[address] = instr
-                self.sendDeviceMessage('GPIB Device Connect', address)
-            except Exception as e:
-                print(('Failed to add %s: %s' %(address, str(e))))
-        except Exception as e:
-            print(('Problem while adding device %s: %s' %(address, str(e))))
-
-    @setting(104, address='s', returns='')
-    def close_connection(self, c, address=None):
-        """
-        Close the connection to the given address, and 
-        delete device from device list.
-
-        If no address is given, do so with current address
-        """
-        if address == None:
-            if 'addr' not in c:
-                raise DeviceNotSelectedError("No GPIB address selected")
-            else:
-                address = c["addr"]
-        elif address not in self.devices:
-            raise Exception('Could not find device ' + address)
-        instr = self.devices[address]
-        instr.close()
-        del self.devices[address]
-        self.sendDeviceMessage('GPIB Device Disconnect', address)
 
 __server__ = GPIBBusServer()
 
