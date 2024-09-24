@@ -35,9 +35,8 @@ from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet import reactor, defer
 # import labrad.units as units
 from labrad.types import Value
-# import numpy as np
+from numpy import frombuffer, float32
 import time
-import struct
 # from exceptions import IndexError
 
 TIMEOUT = Value(5,'s')
@@ -294,10 +293,8 @@ class DAC_ADCServer(DeviceServer):
 
         dev = self.selectedDevice(c)
         yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}")
-        # yield dev.write("BUFFER_RAMP,%s,%s,%s,%s,%i,%i,%i\r\n" % (sdacPorts, sadcPorts, sivoltages, sfvoltages, steps, delay, nReadings))
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
-        voltages = []
         channels = []
         data = b''
         
@@ -306,7 +303,6 @@ class DAC_ADCServer(DeviceServer):
             nbytes = 0
             totalbytes = steps * adcN * 4
             while dev.isramping() and (nbytes < totalbytes):
-                # print(nbytes)
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     if nbytes + bytestoread > totalbytes:
@@ -318,41 +314,48 @@ class DAC_ADCServer(DeviceServer):
                         data = data + tmp
                         nbytes = nbytes + bytestoread
 
+                if data.startswith(b'FAILURE'):
+                    while not data.endswith(b'\r\n'):
+                        bytestoread = yield dev.in_waiting()
+                        if bytestoread > 0:
+                            tmp = yield dev.readByte(bytestoread)
+                            data += tmp
+
+                    raise ValueError(data.decode('utf-8').strip())
+
             dev.setramping(False)
             
+            print(f"collection time: {time.time() - startTime}")
 
-            # data = list(data)
 
             for x in range(adcN):
                 channels.append([])
+            
+            for i in range(len(data) // 4):
+                voltage = frombuffer(data[i * 4:(i + 1) * 4], dtype=float32)[0]
 
-            for x in range(0, len(data), 4):
-                # The python 2 way
-                # b1 = int(data[x].encode('hex'), 16)
-                # b2 = int(data[x + 1].encode('hex'), 16)
-                # decimal = twoByteToInt(b1, b2)
-                
-                # decimal = twoByteToInt(data[x], data[x + 1])
-                # voltage = map2(decimal, 0, 65536, -10.0, 10.0)
-                voltage=struct.unpack('f', data[x:x + 4])[0]
-                voltages.append(voltage)
+                channel_index = i % adcN
+                channels[channel_index].append(float(voltage))
+            
+            # voltages = frombuffer(data, dtype=float32).tolist()
 
-            for x in range(0, steps * adcN, adcN):
-                for y in range(adcN):
-                    try:
-                        channels[y].append(voltages[x + y])
-                    except IndexError:
-                        channels[y].append(0)
-
+            # for x in range(0, steps * adcN, adcN):
+            #     for y in range(adcN):
+            #         try:
+            #             channels[y].append(voltages[x + y])
+            #         except IndexError:
+            #             channels[y].append(0)
+        
         except KeyboardInterrupt:
             print('Stopped')
+        
+        print(f"parsing time: {time.time()-startTime}")
 
         try:
             yield dev.read()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
-        endTime = time.time()
-        print(f"time taken: {endTime-startTime}")
+        print(f"final time: {time.time()-startTime}")
         returnValue(channels)
 
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
