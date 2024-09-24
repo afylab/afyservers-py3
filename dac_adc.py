@@ -292,7 +292,7 @@ class DAC_ADCServer(DeviceServer):
         sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}")
+        yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}\r\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
@@ -352,21 +352,18 @@ class DAC_ADCServer(DeviceServer):
         print(f"parsing time: {time.time()-startTime}")
 
         try:
-            yield dev.read()
+            yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
         print(f"final time: {time.time()-startTime}")
         returnValue(channels)
 
-    @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
-    def buffer_ramp_dis(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,adcSteps,nReadings=1):
+    @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
+    def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):
         """
-        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
-        It does it within an specified number steps and a delay (microseconds) between the update of the last output channel and the reading of the first input channel.
+        TIME_SERIES_BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
+        It does it within an specified number steps, with DAC voltages being updated every dacPeriod_us and ADC voltages read every adcPeriod_us
         """
-
-        if adcSteps>steps:
-            raise ValueError('steps must be larger than adcSteps.')
 
         dacN = len(dacPorts)
         adcN = len(adcPorts)
@@ -374,30 +371,35 @@ class DAC_ADCServer(DeviceServer):
         sadcPorts = ""
         sivoltages = ""
         sfvoltages = ""
-
+        sdacconfig = ""
+        sadcconfig = ""
 
         for x in range(dacN):
             sdacPorts = sdacPorts + str(dacPorts[x])
             sivoltages = sivoltages + str(ivoltages[x]) + ","
             sfvoltages = sfvoltages + str(fvoltages[x]) + ","
+            sdacconfig += f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
 
         sivoltages = sivoltages[:-1]
         sfvoltages = sfvoltages[:-1]
+        sdacconfig =sdacconfig[:-1]
 
         for x in range(adcN):
             sadcPorts = sadcPorts + str(adcPorts[x])
+            sadcconfig += f"{adcPorts[x]},"
+        
+        sadcconfig =sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write("BUFFER_RAMP_DIS,%s,%s,%s,%s,%i,%i,%i,%i\r\n" % (sdacPorts, sadcPorts, sivoltages, sfvoltages, steps, delay, nReadings, adcSteps))
+        yield dev.write(f"TIME_SERIES_BUFFER_RAMP,{dacN},{adcN},{steps},{dacPeriod_us},{adcPeriod_us},{sdacconfig},{sadcconfig}\r\n")
         #self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(delay), str(nReadings)])
 
-        voltages = []
         channels = []
         data = b''
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = adcSteps * adcN * 2
+            totalbytes = int(steps * (dacPeriod_us / adcPeriod_us) * adcN * 4)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -412,33 +414,21 @@ class DAC_ADCServer(DeviceServer):
 
             dev.setramping(False)
 
-            data = list(data)
-
             for x in range(adcN):
                 channels.append([])
 
-            for x in range(0, len(data), 2):
-                # The python 2 way
-                # b1 = int(data[x].encode('hex'), 16)
-                # b2 = int(data[x + 1].encode('hex'), 16)
-                # decimal = twoByteToInt(b1, b2)
-                decimal = twoByteToInt(data[x], data[x + 1])
-                voltage = map2(decimal, 0, 65536, -10.0, 10.0)
-                voltages.append(voltage)
+            for i in range(len(data) // 4):
+                voltage = frombuffer(data[i * 4:(i + 1) * 4], dtype=float32)[0]
 
-            for x in range(0, totalbytes//2, adcN):
-                for y in range(adcN):
-                    try:
-                        channels[y].append(voltages[x + y])
-                    except IndexError:
-                        channels[y].append(0)
+                channel_index = i % adcN
+                channels[channel_index].append(float(voltage))
 
         except KeyboardInterrupt:
             print('Stopped')
 
         #Reads BUFFER_RAMP_FINISHED
         try:
-            yield dev.read()
+            yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
 
