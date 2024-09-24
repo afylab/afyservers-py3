@@ -37,10 +37,11 @@ from twisted.internet import reactor, defer
 from labrad.types import Value
 # import numpy as np
 import time
+import struct
 # from exceptions import IndexError
 
 TIMEOUT = Value(5,'s')
-BAUD    = 1000000
+BAUD    = 10000
 
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
@@ -257,44 +258,55 @@ class DAC_ADCServer(DeviceServer):
         dev.timeout(TIMEOUT) # set timeout back to default
         returnValue(ans)
 
-    @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
-    def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
+    @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
+    def dac_led_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacInterval,dacSettlingTime,nReadings=1):
         """
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
-        It does it within an specified number steps and a delay (microseconds) between the update of the last output channel and the reading of the first input channel.
+        It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
         """
+        startTime = time.time()
         dacN = len(dacPorts)
         adcN = len(adcPorts)
         sdacPorts = ""
         sadcPorts = ""
         sivoltages = ""
         sfvoltages = ""
+        
+        sdacconfig = ""
+        sadcconfig = ""
 
 
         for x in range(dacN):
             sdacPorts = sdacPorts + str(dacPorts[x])
             sivoltages = sivoltages + str(ivoltages[x]) + ","
             sfvoltages = sfvoltages + str(fvoltages[x]) + ","
+            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
 
         sivoltages = sivoltages[:-1]
         sfvoltages = sfvoltages[:-1]
+        sdacconfig = sdacconfig[:-1]
 
         for x in range(adcN):
             sadcPorts = sadcPorts + str(adcPorts[x])
+            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
+
+        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write("BUFFER_RAMP,%s,%s,%s,%s,%i,%i,%i\r\n" % (sdacPorts, sadcPorts, sivoltages, sfvoltages, steps, delay, nReadings))
-        self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(delay), str(nReadings)])
+        yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}")
+        # yield dev.write("BUFFER_RAMP,%s,%s,%s,%s,%i,%i,%i\r\n" % (sdacPorts, sadcPorts, sivoltages, sfvoltages, steps, delay, nReadings))
+        self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         voltages = []
         channels = []
         data = b''
-
+        
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = steps * adcN * 2
+            totalbytes = steps * adcN * 4
             while dev.isramping() and (nbytes < totalbytes):
+                # print(nbytes)
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     if nbytes + bytestoread > totalbytes:
@@ -307,19 +319,22 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
             dev.setramping(False)
+            
 
-            data = list(data)
+            # data = list(data)
 
             for x in range(adcN):
                 channels.append([])
 
-            for x in range(0, len(data), 2):
+            for x in range(0, len(data), 4):
                 # The python 2 way
                 # b1 = int(data[x].encode('hex'), 16)
                 # b2 = int(data[x + 1].encode('hex'), 16)
                 # decimal = twoByteToInt(b1, b2)
-                decimal = twoByteToInt(data[x], data[x + 1])
-                voltage = map2(decimal, 0, 65536, -10.0, 10.0)
+                
+                # decimal = twoByteToInt(data[x], data[x + 1])
+                # voltage = map2(decimal, 0, 65536, -10.0, 10.0)
+                voltage=struct.unpack('f', data[x:x + 4])[0]
                 voltages.append(voltage)
 
             for x in range(0, steps * adcN, adcN):
@@ -336,7 +351,8 @@ class DAC_ADCServer(DeviceServer):
             yield dev.read()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
-
+        endTime = time.time()
+        print(f"time taken: {endTime-startTime}")
         returnValue(channels)
 
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
