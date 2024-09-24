@@ -357,6 +357,80 @@ class DAC_ADCServer(DeviceServer):
             print("Error clearing the serial buffer after buffer_ramp")
         print(f"final time: {time.time()-startTime}")
         returnValue(channels)
+    
+    # da.time_series_buffer_ramp_2d([0],[1],[0],[0],[5],[5],[0],10,5,true,500,1000)
+    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='***v[]')
+    def time_series_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace, dacPeriod_us,adcPeriod_us):
+        slowDacN = len(slowDacPorts)
+        fastDacN = len(fastDacPorts)
+        adcN = len(adcPorts)
+        sadcPorts = ""
+        
+        sslowDacConfig = ""
+        sfastDacConfig = ""
+        
+        for x in range(slowDacN):
+            sslowDacConfig += f"{slowDacPorts[x]},{slowDacV0[x]},{slowDacVf[x]},"
+        
+        sslowDacConfig = sslowDacConfig[:-1]
+        
+        for x in range(fastDacN):
+            sfastDacConfig += f"{fastDacPorts[x]},{fastDacV0[x]},{fastDacVf[x]},"
+        
+        sfastDacConfig = sfastDacConfig[:-1]
+        
+        for x in range(adcN):
+            sadcPorts += f"{adcPorts[x]},"
+        
+        sadcPorts = sadcPorts[:-1]
+        
+        dev = self.selectedDevice(c)
+        yield dev.write(f"2D_TIME_SERIES,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{adcPeriod_us},{'1' if retrace else '0'},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
+        
+        
+        dev.setramping(True)
+        try:
+            outputData = []
+            for _ in range(stepsSlow):
+                channels = []
+                data = b''
+                nbytes = 0
+                totalbytes = int(stepsFast * (dacPeriod_us / adcPeriod_us) * adcN * 4)
+                while dev.isramping() and (nbytes < totalbytes):
+                    bytestoread = yield dev.in_waiting()
+                    if bytestoread > 0:
+                        if nbytes + bytestoread > totalbytes:
+                            tmp = yield dev.readByte(totalbytes - nbytes)
+                            data = data + tmp
+                            nbytes = totalbytes
+                        else:
+                            tmp = yield dev.readByte(bytestoread)
+                            data = data + tmp
+                            nbytes = nbytes + bytestoread
+
+                for x in range(adcN):
+                    channels.append([])
+
+                for i in range(len(data) // 4):
+                    voltage = frombuffer(data[i * 4:(i + 1) * 4], dtype=float32)[0]
+
+                    channel_index = i % adcN
+                    channels[channel_index].append(float(voltage))
+                
+                outputData.append(channels)
+            
+            dev.setramping(False)
+        
+        except KeyboardInterrupt:
+            print('Stopped')
+        
+        
+        try:
+            yield dev.reset_input_buffer()
+        except:
+            print("Error clearing the serial buffer after buffer_ramp")
+
+        returnValue(outputData)
 
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
     def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):
