@@ -263,7 +263,6 @@ class DAC_ADCServer(DeviceServer):
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
         It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
         """
-        startTime = time.time()
         dacN = len(dacPorts)
         adcN = len(adcPorts)
         sdacPorts = ""
@@ -324,8 +323,6 @@ class DAC_ADCServer(DeviceServer):
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
-            
-            print(f"collection time: {time.time() - startTime}")
 
 
             for x in range(adcN):
@@ -348,14 +345,11 @@ class DAC_ADCServer(DeviceServer):
         
         except KeyboardInterrupt:
             print('Stopped')
-        
-        print(f"parsing time: {time.time()-startTime}")
 
         try:
             yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
-        print(f"final time: {time.time()-startTime}")
         returnValue(channels)
     
     # da.time_series_buffer_ramp_2d([0],[1],[0],[0],[5],[5],[0],10,5,true,500,1000)
@@ -395,7 +389,7 @@ class DAC_ADCServer(DeviceServer):
                 channels = []
                 data = b''
                 nbytes = 0
-                totalbytes = int(stepsFast * (dacPeriod_us / adcPeriod_us) * adcN * 4)
+                totalbytes = int(stepsFast * (dacPeriod_us / adcPeriod_us)) * adcN * 4
                 while dev.isramping() and (nbytes < totalbytes):
                     bytestoread = yield dev.in_waiting()
                     if bytestoread > 0:
@@ -477,7 +471,7 @@ class DAC_ADCServer(DeviceServer):
                 channels = []
                 data = b''
                 nbytes = 0
-                totalbytes = int(stepsFast * adcN * 4)
+                totalbytes = stepsFast * adcN * 4
                 while dev.isramping() and (nbytes < totalbytes):
                     bytestoread = yield dev.in_waiting()
                     if bytestoread > 0:
@@ -557,13 +551,12 @@ class DAC_ADCServer(DeviceServer):
         dev = self.selectedDevice(c)
         yield dev.write(f"TIME_SERIES_BUFFER_RAMP,{dacN},{adcN},{steps},{dacPeriod_us},{adcPeriod_us},{sdacconfig},{sadcconfig}\r\n")
         #self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(delay), str(nReadings)])
-
         channels = []
         data = b''
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = int(steps * (dacPeriod_us / adcPeriod_us) * adcN * 4)
+            totalbytes = int(steps * (dacPeriod_us / adcPeriod_us)) * adcN * 4
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
