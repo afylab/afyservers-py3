@@ -536,15 +536,14 @@ class DAC_ADCServer(DeviceServer):
         sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-
-        yield dev.write(f"BOXCAR_BUFFER_RAMP_DEBUG,{dacN},{adcN},{dacsteps},{numAdcMeasuresPerDacStep},{numAdcAverages},{numAdcConversionSkips},{adcConversionTime_us},{sdacconfig},{sadcconfig}\r\n")
+        yield dev.write(f"BOXCAR_BUFFER_RAMP,{dacN},{adcN},{dacsteps},{numAdcMeasuresPerDacStep},{numAdcAverages},{numAdcConversionSkips},{adcConversionTime_us},{sdacconfig},{sadcconfig}\r\n")
         
         channels = []
         data = b''
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = (2 * dacsteps * numAdcAverages + 1) * numAdcMeasuresPerDacStep * adcN * 4
+            totalbytes = 2 * dacsteps * numAdcAverages * numAdcMeasuresPerDacStep * adcN * 4
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -613,6 +612,52 @@ class DAC_ADCServer(DeviceServer):
                 else:
                     adcOutput.append(data[i])
             output.append(adcOutput)
+        returnValue(output)
+    
+    @setting(130, dacPorts='*i', adcPorts='*i', ivoltages_1='*v[]', fvoltages_1='*v[]', ivoltages_2='*v[]', fvoltages_2='*v[]', dacsteps='i',numAdcMeasuresPerDacStep='i',numAdcAverages='i', numAdcConversionSkips='i', adcConversionTime_us='i', returns='**v[]')#(*v[],*v[])')
+    def boxcar_buffer_ramp_transient_delete(self,c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us):
+        """
+        """
+        rawData = yield self.boxcar_buffer_ramp_debug(c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us)
+        output = []
+        for adcIndex in range(len(rawData)):
+            data = rawData[adcIndex]
+            group_size = numAdcAverages * 2 * numAdcMeasuresPerDacStep  # Total elements per group
+    
+            adcOutput = []
+    
+            total_length = len(data)
+            num_full_groups = total_length // group_size
+    
+            for group_num in range(num_full_groups):
+                start_idx = group_num * group_size
+                end_idx = start_idx + group_size
+                group = data[start_idx:end_idx]
+    
+                top_elements = []
+                bottom_elements = []
+    
+                for cycle in range(numAdcAverages):
+                    cycle_start = cycle * 2 * numAdcMeasuresPerDacStep
+                    top_start = cycle_start
+                    top_end = top_start + numAdcMeasuresPerDacStep
+                    bottom_start = top_end
+                    bottom_end = bottom_start + numAdcMeasuresPerDacStep
+    
+                    top = group[top_start:top_end]
+                    bottom = group[bottom_start:bottom_end]
+    
+                    top_elements.extend(top)
+                    bottom_elements.extend(bottom)
+    
+                average_top = sum(top_elements) / len(top_elements) if top_elements else 0
+                average_bottom = sum(bottom_elements) / len(bottom_elements) if bottom_elements else 0
+    
+                difference = average_top - average_bottom
+                adcOutput.append(difference)
+    
+            output.append(adcOutput)
+            
         returnValue(output)
 
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
