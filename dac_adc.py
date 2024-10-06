@@ -588,30 +588,39 @@ class DAC_ADCServer(DeviceServer):
     def boxcar_buffer_ramp_window_average(self,c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us):
         """
         """
-        rawData = yield self.boxcar_buffer_ramp_debug(c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us)
+        rawData = yield self.boxcar_buffer_ramp_debug(c, dacPorts, adcPorts, ivoltages_1, fvoltages_1, ivoltages_2, fvoltages_2, dacsteps, numAdcMeasuresPerDacStep, numAdcAverages, numAdcConversionSkips, adcConversionTime_us)
+        
         output = []
+        period_length = numAdcMeasuresPerDacStep * 2
+        
         for adcIndex in range(len(adcPorts)):
-            data=rawData[adcIndex]
+            data = rawData[adcIndex]
             adcOutput = []
-            data_length = len(data)
-            for i in range(data_length):
-                period_index = i // (numAdcMeasuresPerDacStep*2)
-                position_in_period = i % (numAdcMeasuresPerDacStep*2)
+            
+            window_size = period_length * numAdcAverages
+            for start in range(0, len(data), window_size):
+                window = data[start:start + window_size]
                 
-                values =[]
-                for p in range(numAdcAverages):
-                    curr_period = period_index + p
-                    idx = curr_period * (numAdcMeasuresPerDacStep*2) + position_in_period
-                    if idx < data_length:
-                        values.append(data[idx])
-                    else:
-                        break
-                if len(values) > 0:
-                    avg = np.mean(values)
-                    adcOutput.append(avg)
-                else:
-                    adcOutput.append(data[i])
+                periods = [
+                    window[i:i + period_length]
+                    for i in range(0, len(window), period_length)
+                ]
+                
+                if len(periods) < numAdcAverages:
+                    print("INCOMPLETE WINDOW!")
+                    continue # Skip incomplete windows
+                
+                periods_array = np.array(periods[:numAdcAverages])
+                
+                avg_period = np.mean(periods_array, axis=0)
+                
+                first_half = np.mean(avg_period[:numAdcMeasuresPerDacStep])
+                second_half = np.mean(avg_period[numAdcMeasuresPerDacStep:])
+                
+                adcOutput.extend([first_half, second_half])
+            
             output.append(adcOutput)
+        
         returnValue(output)
     
     @setting(130, dacPorts='*i', adcPorts='*i', ivoltages_1='*v[]', fvoltages_1='*v[]', ivoltages_2='*v[]', fvoltages_2='*v[]', dacsteps='i',numAdcMeasuresPerDacStep='i',numAdcAverages='i', numAdcConversionSkips='i', adcConversionTime_us='i', returns='**v[]')#(*v[],*v[])')
