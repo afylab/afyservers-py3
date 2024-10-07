@@ -353,7 +353,7 @@ class DAC_ADCServer(DeviceServer):
         returnValue(channels)
     
     # da.time_series_buffer_ramp_2d([0],[1],[0],[0],[5],[5],[0],10,5,true,500,1000)
-    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='***v[]')
+    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')
     def time_series_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace, dacPeriod_us,adcPeriod_us):
         slowDacN = len(slowDacPorts)
         fastDacN = len(fastDacPorts)
@@ -380,62 +380,53 @@ class DAC_ADCServer(DeviceServer):
         
         dev = self.selectedDevice(c)
         yield dev.write(f"2D_TIME_SERIES_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{adcPeriod_us},{'1' if retrace else '0'},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
-        
-        
+        channels = []
+        data = b''
         dev.setramping(True)
         try:
-            outputData = []
-            for _ in range(stepsSlow):
-                channels = []
-                data = b''
-                nbytes = 0
-                totalbytes = int(stepsFast * (dacPeriod_us / adcPeriod_us)) * adcN * 4
-                while dev.isramping() and (nbytes < totalbytes):
-                    bytestoread = yield dev.in_waiting()
-                    if bytestoread > 0:
-                        if nbytes + bytestoread > totalbytes:
-                            tmp = yield dev.readByte(totalbytes - nbytes)
-                            data = data + tmp
-                            nbytes = totalbytes
-                        else:
+            nbytes = 0
+            totalbytes = stepsSlow * int(stepsFast * (dacPeriod_us / adcPeriod_us)) * adcN * 4
+            while dev.isramping() and (nbytes < totalbytes):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    if nbytes + bytestoread > totalbytes:
+                        tmp = yield dev.readByte(totalbytes - nbytes)
+                        data = data + tmp
+                        nbytes = totalbytes
+                    else:
+                        tmp = yield dev.readByte(bytestoread)
+                        data = data + tmp
+                        nbytes = nbytes + bytestoread
+                if data.startswith(b'FAILURE'):
+                    while not data.endswith(b'\r\n'):
+                        bytestoread = yield dev.in_waiting()
+                        if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
-                            data = data + tmp
-                            nbytes = nbytes + bytestoread
-                            
-                    if data.startswith(b'FAILURE'):
-                        while not data.endswith(b'\r\n'):
-                            bytestoread = yield dev.in_waiting()
-                            if bytestoread > 0:
-                                tmp = yield dev.readByte(bytestoread)
-                                data += tmp
-                        raise ValueError(data.decode('utf-8').strip())
-                
-                dev.setramping(False)
-                
-                for x in range(adcN):
-                    channels.append([])
+                            data += tmp
+                    raise ValueError(data.decode('utf-8').strip())
 
-                for i in range(len(data) // 4):
-                    voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+            dev.setramping(False)
 
-                    channel_index = i % adcN
-                    channels[channel_index].append(float(voltage)) 
-                
-                outputData.append(channels)
-            
-        
+            for x in range(adcN):
+                channels.append([])
+
+            for i in range(len(data) // 4):
+                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+
+                channel_index = i % adcN
+                channels[channel_index].append(float(voltage))
+
         except KeyboardInterrupt:
             print('Stopped')
-        
-        
+
         try:
             yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
 
-        returnValue(outputData)
+        returnValue(channels)
     
-    @setting(127,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',numAdcAverages='i',dacPeriod_us='v[]',dacSettlingTime_us='v[]',returns='***v[]')
+    @setting(127,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',numAdcAverages='i',dacPeriod_us='v[]',dacSettlingTime_us='v[]',returns='**v[]')
     def dac_led_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,numAdcAverages,dacPeriod_us,dacSettlingTime_us):
         slowDacN = len(slowDacPorts)
         fastDacN = len(fastDacPorts)
@@ -462,59 +453,51 @@ class DAC_ADCServer(DeviceServer):
         
         dev = self.selectedDevice(c)
         yield dev.write(f"2D_DAC_LED_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{dacSettlingTime_us},{'1' if retrace else '0'},{numAdcAverages},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
-        
-        
+        channels = []
+        data = b''
         dev.setramping(True)
         try:
-            outputData = []
-            for _ in range(stepsSlow):
-                channels = []
-                data = b''
-                nbytes = 0
-                totalbytes = stepsFast * adcN * 4
-                while dev.isramping() and (nbytes < totalbytes):
-                    bytestoread = yield dev.in_waiting()
-                    if bytestoread > 0:
-                        if nbytes + bytestoread > totalbytes:
-                            tmp = yield dev.readByte(totalbytes - nbytes)
-                            data = data + tmp
-                            nbytes = totalbytes
-                        else:
+            nbytes = 0
+            totalbytes = stepsSlow * stepsFast * adcN * 4
+            while dev.isramping() and (nbytes < totalbytes):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    if nbytes + bytestoread > totalbytes:
+                        tmp = yield dev.readByte(totalbytes - nbytes)
+                        data = data + tmp
+                        nbytes = totalbytes
+                    else:
+                        tmp = yield dev.readByte(bytestoread)
+                        data = data + tmp
+                        nbytes = nbytes + bytestoread
+                if data.startswith(b'FAILURE'):
+                    while not data.endswith(b'\r\n'):
+                        bytestoread = yield dev.in_waiting()
+                        if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
-                            data = data + tmp
-                            nbytes = nbytes + bytestoread
-                    if data.startswith(b'FAILURE'):
-                        while not data.endswith(b'\r\n'):
-                            bytestoread = yield dev.in_waiting()
-                            if bytestoread > 0:
-                                tmp = yield dev.readByte(bytestoread)
-                                data += tmp
+                            data += tmp
+                    raise ValueError(data.decode('utf-8').strip())
 
-                        raise ValueError(data.decode('utf-8').strip())
-
-                for x in range(adcN):
-                    channels.append([])
-
-                for i in range(len(data) // 4):
-                    voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
-                    channel_index = i % adcN
-                    channels[channel_index].append(float(voltage))
-                
-                outputData.append(channels)
-            
             dev.setramping(False)
-        
+
+            for x in range(adcN):
+                channels.append([])
+
+            for i in range(len(data) // 4):
+                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+
+                channel_index = i % adcN
+                channels[channel_index].append(float(voltage))
+
         except KeyboardInterrupt:
             print('Stopped')
-        
-        
+
         try:
             yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
 
-        returnValue(outputData)
+        returnValue(channels)
     
     @setting(128, dacPorts='*i', adcPorts='*i', ivoltages_1='*v[]', fvoltages_1='*v[]', ivoltages_2='*v[]', fvoltages_2='*v[]', dacsteps='i',numAdcMeasuresPerDacStep='i',numAdcAverages='i', numAdcConversionSkips='i', adcConversionTime_us='i', returns='**v[]')#(*v[],*v[])')
     def boxcar_buffer_ramp_debug(self,c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us):
