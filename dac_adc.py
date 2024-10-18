@@ -257,6 +257,15 @@ class DAC_ADCServer(DeviceServer):
         dev.timeout(TIMEOUT) # set timeout back to default
         returnValue(ans)
 
+
+    @setting(131,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
+    def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
+       yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, 5, nReadings)
+
+    @setting(132,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
+    def buffer_ramp_dis(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,adcSteps,nReadings=1):
+       yield self.time_series_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, steps, steps*delay/adcSteps )
+
     @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     def dac_led_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacInterval,dacSettlingTime,nReadings=1):
         """
