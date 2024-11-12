@@ -656,12 +656,17 @@ class DAC_ADCServer(DeviceServer):
                 average_top = sum(top_elements) / len(top_elements) if top_elements else 0
                 average_bottom = sum(bottom_elements) / len(bottom_elements) if bottom_elements else 0
     
-                difference = average_top - average_bottom
+                difference = abs(average_top - average_bottom)
                 adcOutput.append(difference)
     
             output.append(adcOutput)
             
         returnValue(output)
+    
+    @setting(133)
+    def reset_adc(self,c):
+        dev = self.selectedDevice(c)
+        yield dev.write("RESET\r\n")
 
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
     def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):
