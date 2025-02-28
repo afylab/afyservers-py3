@@ -364,8 +364,8 @@ class DAC_ADCServer(DeviceServer):
         returnValue(channels)
     
     # da.time_series_buffer_ramp_2d([0],[1],[0],[0],[5],[5],[0],10,5,true,500,1000)
-    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')
-    def time_series_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace, dacPeriod_us,adcPeriod_us):
+    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',snake='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')
+    def time_series_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,snake,dacPeriod_us,adcPeriod_us):
         slowDacN = len(slowDacPorts)
         fastDacN = len(fastDacPorts)
         adcN = len(adcPorts)
@@ -390,13 +390,13 @@ class DAC_ADCServer(DeviceServer):
         sadcPorts = sadcPorts[:-1]
         
         dev = self.selectedDevice(c)
-        yield dev.write(f"2D_TIME_SERIES_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{adcPeriod_us},{'1' if retrace else '0'},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
+        yield dev.write(f"2D_TIME_SERIES_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{adcPeriod_us},{'1' if retrace else '0'},{'1' if snake else '0'},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
         channels = []
         data = b''
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * int(stepsFast * (dacPeriod_us / adcPeriod_us)) * adcN * 4
+            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 4 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -437,8 +437,8 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
     
-    @setting(127,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',numAdcAverages='i',dacPeriod_us='v[]',dacSettlingTime_us='v[]',returns='**v[]')
-    def dac_led_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,numAdcAverages,dacPeriod_us,dacSettlingTime_us):
+    @setting(127,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',snake='b',numAdcAverages='i',dacPeriod_us='v[]',dacSettlingTime_us='v[]',returns='**v[]')
+    def dac_led_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,snake,numAdcAverages,dacPeriod_us,dacSettlingTime_us):
         slowDacN = len(slowDacPorts)
         fastDacN = len(fastDacPorts)
         adcN = len(adcPorts)
@@ -463,13 +463,13 @@ class DAC_ADCServer(DeviceServer):
         sadcPorts = sadcPorts[:-1]
         
         dev = self.selectedDevice(c)
-        yield dev.write(f"2D_DAC_LED_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{dacSettlingTime_us},{'1' if retrace else '0'},{numAdcAverages},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
+        yield dev.write(f"2D_DAC_LED_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{dacSettlingTime_us},{'1' if retrace else '0'},{'1' if snake else '0'},{numAdcAverages},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
         channels = []
         data = b''
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * stepsFast * adcN * 4
+            totalbytes = stepsSlow * stepsFast * adcN * 4 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -688,27 +688,29 @@ class DAC_ADCServer(DeviceServer):
             sdacPorts = sdacPorts + str(dacPorts[x])
             sivoltages = sivoltages + str(ivoltages[x]) + ","
             sfvoltages = sfvoltages + str(fvoltages[x]) + ","
-            sdacconfig += f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
+            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
 
         sivoltages = sivoltages[:-1]
         sfvoltages = sfvoltages[:-1]
-        sdacconfig =sdacconfig[:-1]
+        sdacconfig = sdacconfig[:-1]
 
         for x in range(adcN):
             sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig += f"{adcPorts[x]},"
-        
-        sadcconfig =sadcconfig[:-1]
+            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
+
+        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
         yield dev.write(f"TIME_SERIES_BUFFER_RAMP,{dacN},{adcN},{steps},{dacPeriod_us},{adcPeriod_us},{sdacconfig},{sadcconfig}\r\n")
-        
+        self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacPeriod_us), str(adcPeriod_us)])
+
         channels = []
         data = b''
+        
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = int(steps * (dacPeriod_us / adcPeriod_us)) * adcN * 4
+            totalbytes = int(steps * dacPeriod_us / adcPeriod_us) * adcN * 4
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -720,44 +722,47 @@ class DAC_ADCServer(DeviceServer):
                         tmp = yield dev.readByte(bytestoread)
                         data = data + tmp
                         nbytes = nbytes + bytestoread
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
 
+
             for x in range(adcN):
                 channels.append([])
-
+            
             for i in range(len(data) // 4):
                 voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
 
                 channel_index = i % adcN
+                
                 channels[channel_index].append(float(voltage))
 
+        
         except KeyboardInterrupt:
             print('Stopped')
 
-        #Reads BUFFER_RAMP_FINISHED
         try:
             yield dev.reset_input_buffer()
         except:
             print("Error clearing the serial buffer after buffer_ramp")
-
         returnValue(channels)
-
+    
     @setting(109,channel='i',time='v[]',returns='v[]')
     def set_conversionTime(self,c,channel,time):
         """
         CONVERT_TIME sets the conversion time for the ADC. The conversion time is the time the ADC takes to convert the analog signal to a digital signal.
         Keep in mind that the smaller the conversion time, the more noise your measurements will have. Maximum conversion time: 2686 microseconds. Minimum conversion time: 82 microseconds.
         """
-        if not (channel in self.channels):
-            returnValue("Error: invalid channel. Must be in 0,1,2,3")
+        #if not (channel in self.channels):
+        #    returnValue("Error: invalid channel. Must be in 0,1,2,3")
         if not (82 <= time <= 2686):
             returnValue("Error: invalid conversion time. Must adhere to (82 <= t <= 2686) (t is in microseconds)")
         dev=self.selectedDevice(c)
