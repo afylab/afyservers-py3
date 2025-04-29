@@ -259,7 +259,7 @@ class DAC_ADCServer(DeviceServer):
 
     @setting(131,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
-       out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, 50, nReadings=nReadings)
+       out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, int(delay*0.8 + 0.5), nReadings=nReadings)
        returnValue(out)
 
     @setting(132,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
