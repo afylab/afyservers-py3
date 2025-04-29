@@ -311,18 +311,14 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = steps * adcN * 4
+            totalbytes = steps * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
 
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
@@ -330,18 +326,15 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
 
-
             for x in range(adcN):
                 channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
 
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
             
@@ -396,18 +389,18 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 8 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
+                print(f"bytestoread={bytestoread}")
+                print(f"nbytes={nbytes}")
+                print(f"totalbytes={totalbytes}")
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -421,9 +414,8 @@ class DAC_ADCServer(DeviceServer):
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -469,18 +461,18 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * stepsFast * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = stepsSlow * stepsFast * adcN * 8 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
+                print(f"bytestoread={bytestoread}")
+                print(f"nbytes={nbytes}")
+                print(f"totalbytes={totalbytes}")
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -494,9 +486,8 @@ class DAC_ADCServer(DeviceServer):
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -537,18 +528,18 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = 2 * dacsteps * numAdcAverages * numAdcMeasuresPerDacStep * adcN * 4
+            totalbytes = 2 * dacsteps * numAdcAverages * numAdcMeasuresPerDacStep * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
+                print(f"bytestoread={bytestoread}")
+                print(f"nbytes={nbytes}")
+                print(f"totalbytes={totalbytes}")
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -556,14 +547,14 @@ class DAC_ADCServer(DeviceServer):
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
                     raise ValueError(data.decode('utf-8').strip())
+
             dev.setramping(False)
 
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -710,18 +701,17 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = int(steps * dacPeriod_us / adcPeriod_us) * adcN * 4
+            totalbytes = int(steps * dacPeriod_us / adcPeriod_us) * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
+                print(f"bytestoread={bytestoread}")
+                print(f"nbytes={nbytes}")
+                print(f"totalbytes={totalbytes}")
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
 
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
@@ -729,20 +719,16 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
 
-
             for x in range(adcN):
                 channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
 
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
-                
                 channels[channel_index].append(float(voltage))
 
         
