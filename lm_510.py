@@ -30,7 +30,7 @@ import time
 import re
 
 TIMEOUT = Value(5,'s')
-BAUD = 9600 
+BAUD = 9600
 BYTESIZE = 8
 STOPBITS = 1
 PARITY = None
@@ -156,7 +156,7 @@ class lm_510Server(DeviceServer):
     def connect(self,c,server,port):
         dev=self.selectedDevice(c)
         yield dev.connect(server,port)
-        
+
     @setting(2, 'Select Device',
                 key=[': Select first device',
                      's: Select device by name',
@@ -165,7 +165,7 @@ class lm_510Server(DeviceServer):
     def select_device(self, c, key=0):
         """Select a device for the current context."""
         dev = self.selectDevice(c, key=key)
-        yield self.remote()
+        yield self.remote(c)
         return dev.name
 
     @setting(201, mode = 's')
@@ -253,7 +253,7 @@ class lm_510Server(DeviceServer):
         yield dev.write("H-ALM %f\r" %thresh)
         yield dev.read()
 
-    @setting(208, returns = 's') 
+    @setting(208, returns = 's')
     def get_high_alarm_threshold(self,c):
         """
         Query the high alarm threshold in the present units for the selected channel.
@@ -324,7 +324,7 @@ class lm_510Server(DeviceServer):
         yield dev.write("L-ALM %f\r" %thresh)
         yield dev.read()
 
-    @setting(214, returns = 's') 
+    @setting(214, returns = 's')
     def get_low_alarm_threshold(self,c):
         """
         Query the low alarm threshold in the present units for the selected channel.
@@ -392,7 +392,7 @@ class lm_510Server(DeviceServer):
         yield dev.write("MEAS 1\r" )
         yield dev.read()
 
-    @setting(220, returns = 's') 
+    @setting(220, returns = 's')
     def get_measure(self,c):
         """
         Query latest reading in the present units for the selected channel.
@@ -418,6 +418,21 @@ class lm_510Server(DeviceServer):
         yield dev.write("MODE %s\r" %mode)
         yield dev.read()
 
+    @setting(436)
+    def set_off_mode(self,c):
+        """
+        Availabe Mode: S(Sample/Hold) or C(Continious)
+        Set the sample mode for the selected channel.
+        In Sample/Hold mode the measurements are taken when a MEAS command is sent via the computer interface, the <Enter> button is pressed on the front panel, or when the delay between samples set by the INTVL command expires.
+        The interval timer is reset on each measurement, regardless of source of the measurement request.
+        In Continuous mode measurements are taken as frequently as possible.
+        The channel will also operate as in continuous mode any time a CTRL (refill) cycle has been activated by the level dropping below the LOW threshold until the CTRL cycle is completed by the HIGH threshold being exceeded or a *RST command.
+        """
+        dev=self.selectedDevice(c)
+        yield dev.write("MODE O\r")
+        yield dev.read()
+
+
     @setting(222, returns = 's')
     def get_mode(self,c):
         """
@@ -433,7 +448,7 @@ class lm_510Server(DeviceServer):
     @setting(223)
     def remote(self, c):
         """
-        Takes control of the LM-510 via the remote interface. This command MUST be executed before any further commands will be recognized by the LM-510. 
+        Takes control of the LM-510 via the remote interface. This command MUST be executed before any further commands will be recognized by the LM-510.
         All LM-510 Operating Instruction Manual - Version 1.2 buttons on the front panel are disabled except the Local button.
         This command will be rejected if the menu system is being accessed via the front panel or if LOCAL has been selected via the Local button on the front panel.
         Pressing the Local button again when the menu is not selected will allow this command to be executed.
@@ -590,6 +605,7 @@ class lm_510Server(DeviceServer):
     @setting(9001,v='v')
     def do_nothing(self,c,v):
         pass
+
     @setting(9002)
     def read(self,c):
         dev=self.selectedDevice(c)
@@ -599,6 +615,7 @@ class lm_510Server(DeviceServer):
     def write(self,c,phrase):
         dev=self.selectedDevice(c)
         yield dev.write(phrase)
+
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)

@@ -117,6 +117,7 @@ class GPIBBusServer(LabradServer):
                     instr.clear()
                     if addr.endswith('SOCKET'):
                         instr.write_termination = '\n'
+                    instr.timeout = self.defaultTimeout['ms']
                     self.devices[addr] = instr
                     self.sendDeviceMessage('GPIB Device Connect', addr)
                 except Exception as e:
@@ -158,6 +159,8 @@ class GPIBBusServer(LabradServer):
         """Get or set the GPIB timeout."""
         if time is not None:
             c['timeout'] = time
+            for instr in self.devices.values():
+                instr.timeout = time['ms']
         return c['timeout']
 
     @setting(3, data='s', returns='')
