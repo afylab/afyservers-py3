@@ -58,7 +58,7 @@ class AgilentDMMServer(GPIBManagedServer):
     # Resistance ---------------------------------------------------------------
     @setting(12, fourWire='b', returns='v[]')
     def resistance(self, c, fourWire=False):
-        """Measure resistance. Defaults to 2‑wire unless *fourWire* is True."""
+        """Measure resistance. Defaults to 2-wire unless *fourWire* is True."""
         dev = self.selectedDevice(c)
         mode = 'FRES' if fourWire else 'RES'
         ans = yield dev.query('MEAS:{}?'.format(mode))
