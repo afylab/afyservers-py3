@@ -352,7 +352,6 @@ class DAC_ADCServer(DeviceServer):
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
-        print(f"bytestoread={bytestoread}")
 
         if bytestoread > 0:
             while not extraBytes.endswith(b'\r\n'):
@@ -412,9 +411,6 @@ class DAC_ADCServer(DeviceServer):
             totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 8 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
-                print(f"bytestoread={bytestoread}")
-                print(f"nbytes={nbytes}")
-                print(f"totalbytes={totalbytes}")
                 if bytestoread > 0:
                     to_read = min(bytestoread, totalbytes - nbytes)
                     tmp = yield dev.readByte(to_read)
@@ -444,7 +440,6 @@ class DAC_ADCServer(DeviceServer):
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
-        print(f"bytestoread={bytestoread}")
 
         if bytestoread > 0:
             while not extraBytes.endswith(b'\r\n'):
@@ -533,7 +528,6 @@ class DAC_ADCServer(DeviceServer):
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
-        print(f"bytestoread={bytestoread}")
 
         if bytestoread > 0:
             while not extraBytes.endswith(b'\r\n'):
