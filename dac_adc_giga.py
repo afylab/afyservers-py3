@@ -827,6 +827,22 @@ class DAC_ADCServer(DeviceServer):
         ans = yield dev.read()
         self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
+    
+    @setting(134,channel='i',fw='i',returns='v[]')
+    def set_conversionTimeFW(self,c,channel,fw):
+        """
+        CONVERT_TIME sets the conversion time for the ADC. The conversion time is the time the ADC takes to convert the analog signal to a digital signal.
+        Keep in mind that the smaller the conversion time, the more noise your measurements will have. Maximum conversion time: 2686 microseconds. Minimum conversion time: 82 microseconds.
+        """
+        #if not (channel in self.channels):
+        #    returnValue("Error: invalid channel. Must be in 0,1,2,3")
+        if not (3 <= fw <= 127):
+            returnValue("Error: invalid conversion time. Must adhere to (3 <= fw <= 127)")
+        dev=self.selectedDevice(c)
+        yield dev.write("CONVERT_TIME_FW,%i,%f\r\n"%(channel,fw))
+        ans = yield dev.read()
+        # self.sigConvTimeSet([str(channel),str(ans)])
+        returnValue(float(ans))
 
 
     @setting(110,returns='s')
