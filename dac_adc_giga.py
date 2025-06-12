@@ -144,6 +144,7 @@ class DAC_ADCServer(DeviceServer):
     sigRamp2Started      = Signal(sPrefix+3,'signal__ramp_2_started'     , '*s') #
     sigConvTimeSet       = Signal(sPrefix+4,'signal__conversion_time_set', '*s') #
     sigBufferRampStarted = Signal(sPrefix+5,'signal__buffer_ramp_started', '*s') #
+    sigSpectrumStarted = Signal(sPrefix+6, 'signal__spectrum_started','*s') #
 
     @inlineCallbacks
     def initServer(self):
@@ -567,6 +568,7 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
     
+    '''
     @setting(128, dacPorts='*i', adcPorts='*i', ivoltages_1='*v[]', fvoltages_1='*v[]', ivoltages_2='*v[]', fvoltages_2='*v[]', dacsteps='i',numAdcMeasuresPerDacStep='i',numAdcAverages='i', numAdcConversionSkips='i', adcConversionTime_us='i', returns='**v[]')#(*v[],*v[])')
     def boxcar_buffer_ramp_debug(self,c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us):
         """
@@ -719,12 +721,103 @@ class DAC_ADCServer(DeviceServer):
             output.append(adcOutput)
             
         returnValue(output)
-    
+    '''
     @setting(133)
     def reset_adc(self,c):
         dev = self.selectedDevice(c)
         yield dev.write("RESET\r\n")
+    
+    @setting(220)
+    def hard_reset_adc(self,c):
+        dev = self.selectedDevice(c)
+        yield dev.write("HARD_RESET\r\n")
+        ans = yield dev.read()
+        returnValue(ans)
+        
+    @setting(135, channel='i', returns='v[]')
+    def get_conversion_time(self,c,channel):
+        dev = self.selectedDevice(c)
+        yield dev.write(f"GET_CONVERT_TIME,{channel}\r\n")
+        ans = yield dev.read()
+        returnValue(float(ans))
+        
+    @setting(201,adcPorts='*i', convtime='v[]', totalTime='v[]')
+    def time_series_adc_read(self, c, adcPorts, convtime, totalTime):
+        """
+        TIME_SERIES_ADC_READ reads the specified ADC channels for a pre-determined length of time
+        This function currently requires that all the ADCs being called have the same conversion time
+        """
+        adcN = len(adcPorts)
+        sadcPorts = ""
+        sadcconfig = ""
+        
+        for x in range(adcN):
+            sadcPorts = sadcPorts + str(adcPorts[x])
+            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
 
+        sadcconfig = sadcconfig[:-1]
+        
+        dev = self.selectedDevice(c)
+        
+        yield dev.write(f"TIME_SERIES_ADC_READ, {adcN}, {sadcconfig}, {convtime}, {totalTime}\r\n")
+        self.sigSpectrumStarted([adcPorts, totalTime])
+        
+        channels = []
+        data = b''
+      
+        dev.setramping(True)
+        sampling_time_data = b''
+        sampling_time_data += yield dev.readByte(4)
+        sampling_time = np.frombuffer(sampling_time_data, dtype=np.float32)[0]
+        
+        try:
+            nbytes = 0
+            totalbytes = adcN * int(totalTime / sampling_time) * 4
+            while dev.isramping() and (nbytes < totalbytes):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    if nbytes + bytestoread > totalbytes:
+                        tmp = yield dev.readByte(totalbytes - nbytes)
+                        data = data + tmp
+                        nbytes = totalbytes
+                    else:
+                        tmp = yield dev.readByte(bytestoread)
+                        data = data + tmp
+                        nbytes = nbytes + bytestoread
+
+                if data.startswith(b'FAILURE'):
+                    while not data.endswith(b'\r\n'):
+                        bytestoread = yield dev.in_waiting()
+                        if bytestoread > 0:
+                            tmp = yield dev.readByte(bytestoread)
+                            data += tmp
+
+                    raise ValueError(data.decode('utf-8').strip())
+
+            dev.setramping(False)
+
+
+            for x in range(adcN):
+                channels.append([])
+            
+            for i in range(len(data) // 4):
+                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+
+                channel_index = i % adcN
+                
+                channels[channel_index].append(float(voltage))
+
+        
+        except KeyboardInterrupt:
+            print('Stopped')
+
+        try:
+            yield dev.reset_input_buffer()
+        except:
+            print("Error clearing the serial buffer after buffer_ramp")
+        returnValue(channels)
+        
+    
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
     def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):
         """
@@ -763,6 +856,7 @@ class DAC_ADCServer(DeviceServer):
 
         channels = []
         data = b''
+      
         
         dev.setramping(True)
         try:
@@ -1028,7 +1122,7 @@ class DAC_ADCServer(DeviceServer):
         """
         GET_DAC returns the most recent value to which the provided channel was set.
         """
-        if not (channel in range(4)):
+        if not (channel in range(16)):
             returnValue("Error: invalid port number.")
         dev = self.selectedDevice(c)
         yield dev.write("GET_DAC,%i\r\n"%(channel))
