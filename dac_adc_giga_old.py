@@ -144,7 +144,6 @@ class DAC_ADCServer(DeviceServer):
     sigRamp2Started      = Signal(sPrefix+3,'signal__ramp_2_started'     , '*s') #
     sigConvTimeSet       = Signal(sPrefix+4,'signal__conversion_time_set', '*s') #
     sigBufferRampStarted = Signal(sPrefix+5,'signal__buffer_ramp_started', '*s') #
-    sigSpectrumStarted = Signal(sPrefix+6, 'signal__spectrum_started','*s') #
 
     @inlineCallbacks
     def initServer(self):
@@ -312,18 +311,14 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = steps * adcN * 4
+            totalbytes = steps * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
 
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
@@ -331,18 +326,15 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
 
-
             for x in range(adcN):
                 channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
 
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
             
@@ -416,18 +408,15 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 8 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -441,9 +430,8 @@ class DAC_ADCServer(DeviceServer):
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -508,18 +496,15 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = stepsSlow * stepsFast * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = stepsSlow * stepsFast * adcN * 8 * (2 if retrace and not snake else 1)
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -533,9 +518,8 @@ class DAC_ADCServer(DeviceServer):
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -568,7 +552,6 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
     
-    '''
     @setting(128, dacPorts='*i', adcPorts='*i', ivoltages_1='*v[]', fvoltages_1='*v[]', ivoltages_2='*v[]', fvoltages_2='*v[]', dacsteps='i',numAdcMeasuresPerDacStep='i',numAdcAverages='i', numAdcConversionSkips='i', adcConversionTime_us='i', returns='**v[]')#(*v[],*v[])')
     def boxcar_buffer_ramp_debug(self,c,dacPorts,adcPorts,ivoltages_1,fvoltages_1,ivoltages_2,fvoltages_2,dacsteps,numAdcMeasuresPerDacStep,numAdcAverages,numAdcConversionSkips,adcConversionTime_us):
         """
@@ -596,18 +579,15 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = 2 * dacsteps * numAdcAverages * numAdcMeasuresPerDacStep * adcN * 4
+            totalbytes = 2 * dacsteps * numAdcAverages * numAdcMeasuresPerDacStep * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
+
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
                         bytestoread = yield dev.in_waiting()
@@ -615,14 +595,14 @@ class DAC_ADCServer(DeviceServer):
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
                     raise ValueError(data.decode('utf-8').strip())
+
             dev.setramping(False)
 
             for x in range(adcN):
                 channels.append([])
 
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
                 channels[channel_index].append(float(voltage))
 
@@ -721,103 +701,12 @@ class DAC_ADCServer(DeviceServer):
             output.append(adcOutput)
             
         returnValue(output)
-    '''
+    
     @setting(133)
     def reset_adc(self,c):
         dev = self.selectedDevice(c)
         yield dev.write("RESET\r\n")
-    
-    @setting(220)
-    def hard_reset_adc(self,c):
-        dev = self.selectedDevice(c)
-        yield dev.write("HARD_RESET\r\n")
-        ans = yield dev.read()
-        returnValue(ans)
-        
-    @setting(135, channel='i', returns='v[]')
-    def get_conversion_time(self,c,channel):
-        dev = self.selectedDevice(c)
-        yield dev.write(f"GET_CONVERT_TIME,{channel}\r\n")
-        ans = yield dev.read()
-        returnValue(float(ans))
-        
-    @setting(201,adcPorts='*i', convtime='v[]', totalTime='v[]')
-    def time_series_adc_read(self, c, adcPorts, convtime, totalTime):
-        """
-        TIME_SERIES_ADC_READ reads the specified ADC channels for a pre-determined length of time
-        This function currently requires that all the ADCs being called have the same conversion time
-        """
-        adcN = len(adcPorts)
-        sadcPorts = ""
-        sadcconfig = ""
-        
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
 
-        sadcconfig = sadcconfig[:-1]
-        
-        dev = self.selectedDevice(c)
-        
-        yield dev.write(f"TIME_SERIES_ADC_READ, {adcN}, {sadcconfig}, {convtime}, {totalTime}\r\n")
-        self.sigSpectrumStarted([adcPorts, totalTime])
-        
-        channels = []
-        data = b''
-      
-        dev.setramping(True)
-        sampling_time_data = b''
-        sampling_time_data += yield dev.readByte(4)
-        sampling_time = np.frombuffer(sampling_time_data, dtype=np.float32)[0]
-        
-        try:
-            nbytes = 0
-            totalbytes = adcN * int(totalTime / sampling_time) * 4
-            while dev.isramping() and (nbytes < totalbytes):
-                bytestoread = yield dev.in_waiting()
-                if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
-
-                if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
-                        bytestoread = yield dev.in_waiting()
-                        if bytestoread > 0:
-                            tmp = yield dev.readByte(bytestoread)
-                            data += tmp
-
-                    raise ValueError(data.decode('utf-8').strip())
-
-            dev.setramping(False)
-
-
-            for x in range(adcN):
-                channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
-                channel_index = i % adcN
-                
-                channels[channel_index].append(float(voltage))
-
-        
-        except KeyboardInterrupt:
-            print('Stopped')
-
-        try:
-            yield dev.reset_input_buffer()
-        except:
-            print("Error clearing the serial buffer after buffer_ramp")
-        returnValue(channels)
-        
-    
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
     def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):
         """
@@ -856,23 +745,18 @@ class DAC_ADCServer(DeviceServer):
 
         channels = []
         data = b''
-      
         
         dev.setramping(True)
         try:
             nbytes = 0
-            totalbytes = int(steps * dacPeriod_us / adcPeriod_us) * adcN * 4
+            totalbytes = int(steps * dacPeriod_us / adcPeriod_us) * adcN * 8
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
-                    if nbytes + bytestoread > totalbytes:
-                        tmp = yield dev.readByte(totalbytes - nbytes)
-                        data = data + tmp
-                        nbytes = totalbytes
-                    else:
-                        tmp = yield dev.readByte(bytestoread)
-                        data = data + tmp
-                        nbytes = nbytes + bytestoread
+                    to_read = min(bytestoread, totalbytes - nbytes)
+                    tmp = yield dev.readByte(to_read)
+                    data += tmp
+                    nbytes += to_read
 
                 if data.startswith(b'FAILURE'):
                     while not data.endswith(b'\r\n'):
@@ -880,20 +764,16 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
 
-
             for x in range(adcN):
                 channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
 
+            for i in range(len(data) // 8):
+                voltage = np.frombuffer(data[i * 8:(i + 1) * 8], dtype=np.float64)[0]
                 channel_index = i % adcN
-                
                 channels[channel_index].append(float(voltage))
 
         
@@ -920,22 +800,6 @@ class DAC_ADCServer(DeviceServer):
         yield dev.write("CONVERT_TIME,%i,%f\r\n"%(channel,time))
         ans = yield dev.read()
         self.sigConvTimeSet([str(channel),str(ans)])
-        returnValue(float(ans))
-    
-    @setting(134,channel='i',fw='i',returns='v[]')
-    def set_conversionTimeFW(self,c,channel,fw):
-        """
-        CONVERT_TIME sets the conversion time for the ADC. The conversion time is the time the ADC takes to convert the analog signal to a digital signal.
-        Keep in mind that the smaller the conversion time, the more noise your measurements will have. Maximum conversion time: 2686 microseconds. Minimum conversion time: 82 microseconds.
-        """
-        #if not (channel in self.channels):
-        #    returnValue("Error: invalid channel. Must be in 0,1,2,3")
-        if not (3 <= fw <= 127):
-            returnValue("Error: invalid conversion time. Must adhere to (3 <= fw <= 127)")
-        dev=self.selectedDevice(c)
-        yield dev.write("CONVERT_TIME_FW,%i,%f\r\n"%(channel,fw))
-        ans = yield dev.read()
-        # self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
 
 
@@ -1082,8 +946,8 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         yield dev.write("INQUIRY_OSG\r\n")
-        ans = [0]*32
-        for i in range(32):
+        ans = [0]*8
+        for i in range(8):
             ans[i] = yield dev.read()
 
         returnValue(ans)
@@ -1122,7 +986,7 @@ class DAC_ADCServer(DeviceServer):
         """
         GET_DAC returns the most recent value to which the provided channel was set.
         """
-        if not (channel in range(16)):
+        if not (channel in range(4)):
             returnValue("Error: invalid port number.")
         dev = self.selectedDevice(c)
         yield dev.write("GET_DAC,%i\r\n"%(channel))
