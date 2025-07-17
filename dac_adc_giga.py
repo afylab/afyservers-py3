@@ -382,9 +382,10 @@ class DAC_ADCServer(DeviceServer):
         except:
             print("Error clearing the serial buffer after buffer_ramp")
         returnValue(channels)
-        
-    @setting(221,dacPorts='*i', adcPorts='*i', voltageLists='*v[]', numLoops='i',numDacStepsPerLoop='i',numAdcAverages='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
-    def awg_buffer_ramp(self,c,dacPorts,adcPorts,voltageLists,numLoops,numDacStepsPerLoop,numAdcAverages,dacInterval,dacSettlingTime,nReadings=1):
+
+    # @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
+    @setting(221,dacPorts='*i', adcPorts='*i', voltageLists='**v[]', numLoops='i',dacInterval='i',dacSettlingTime='i',nReadings='i',returns='**v[]')
+    def awg_buffer_ramp(self,c,dacPorts,adcPorts,voltageLists,numLoops,dacInterval,dacSettlingTime,nReadings=1):
         """
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
         It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
@@ -415,9 +416,12 @@ class DAC_ADCServer(DeviceServer):
         sdacconfig = sdacconfig[:-1]
         sadcconfig = sadcconfig[:-1]
 
+        numDacStepsPerLoop = len(voltageLists[0]) if voltageLists else 0
+
         dev = self.selectedDevice(c)
-        yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{numAdcAverages},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}\r\n")
-        self.sigBufferRampStarted([dacPorts, adcPorts, voltageLists, str(numLoops), str(numDacStepsPerLoop), str(numAdcAverages), str(dacInterval), str(dacSettlingTime), str(nReadings)])
+        print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}")
+        yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}\r\n")
+        self.sigBufferRampStarted([dacPorts, adcPorts, voltageLists, str(numLoops), str(numDacStepsPerLoop), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
         data = b''
