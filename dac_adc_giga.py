@@ -384,8 +384,8 @@ class DAC_ADCServer(DeviceServer):
         returnValue(channels)
 
     # @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
-    @setting(221,dacPorts='*i', adcPorts='*i', voltageLists='**v[]', numLoops='i',dacInterval='i',dacSettlingTime='i',nReadings='i',returns='**v[]')
-    def awg_buffer_ramp(self,c,dacPorts,adcPorts,voltageLists,numLoops,dacInterval,dacSettlingTime,nReadings=1):
+    @setting(221,dacPorts='*i', adcPorts='*i', voltageLists='**v[]', numLoops='i',dacInterval='i',nReadings='i',returns='**v[]')
+    def awg_buffer_ramp(self,c,dacPorts,adcPorts,voltageLists,numLoops,dacInterval,nReadings=1):
         """
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
         It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
@@ -421,8 +421,8 @@ class DAC_ADCServer(DeviceServer):
         numDacStepsPerLoop = len(voltageLists[0]) if voltageLists else 0
 
         dev = self.selectedDevice(c)
-        # print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}")
-        yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}\r\n")
+        # print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{sdacconfig},{sadcconfig},{svoltageLists}")
+        yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{sdacconfig},{sadcconfig},{svoltageLists}\r\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, voltageLists, str(numLoops), str(numDacStepsPerLoop), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
