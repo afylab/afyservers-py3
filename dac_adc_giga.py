@@ -403,6 +403,8 @@ class DAC_ADCServer(DeviceServer):
 
         for x in range(dacN):
             sdacconfig = f"{sdacconfig}{dacPorts[x]},"
+        
+        for x in range(adcN):
             sadcconfig = f"{sadcconfig}{adcPorts[x]},"
         
         for i in voltageLists:
@@ -419,7 +421,7 @@ class DAC_ADCServer(DeviceServer):
         numDacStepsPerLoop = len(voltageLists[0]) if voltageLists else 0
 
         dev = self.selectedDevice(c)
-        print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}")
+        # print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}")
         yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig},{svoltageLists}\r\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, voltageLists, str(numLoops), str(numDacStepsPerLoop), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
