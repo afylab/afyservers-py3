@@ -65,11 +65,11 @@ class AgilentDMMServer(GPIBManagedServer):
         returnValue(float(ans))
 
     # Configuration ------------------------------------------------------------
-    @setting(13, vRange='v[]', resolution='v[]')
-    def configure_voltage(self, c, vRange=10, resolution=0.0001):
-        """Configure voltage mode with the specified *vRange* and *resolution*."""
+    @setting(13, vRange='v[]', resolution='v[]', channel='i')
+    def configure_voltage(self, c, vRange=10, resolution=0.0001, channel=1):
+        """Configure voltage mode with the specified *vRange* and *resolution* on *channel*."""
         dev = self.selectedDevice(c)
-        yield dev.write('CONF:VOLT:DC {}, {}'.format(vRange, resolution))
+        yield dev.write('CONF:VOLT:DC {},{},(@{})'.format(vRange, resolution, channel))
 
     # Read ---------------------------------------------------------------------
     @setting(14, returns='v[]')
@@ -78,6 +78,24 @@ class AgilentDMMServer(GPIBManagedServer):
         dev = self.selectedDevice(c)
         ans = yield dev.query('READ?')
         returnValue(float(ans))
+
+    @setting(15, channel='i')
+    def select_channel(self, c, channel):
+        """Select a channel on the device."""
+        dev = self.selectedDevice(c)
+        yield dev.write('ROUT:TERM FRON{}'.format(channel))
+    
+    @setting(16, returns='s')
+    def get_selected_channel(self, c):
+        """Get the currently selected channel on the device."""
+        dev = self.selectedDevice(c)
+        ans = yield dev.query('ROUT:TERM?')
+        ans = ans.strip()
+        if ans == "FRON":
+            ans = 1
+        if ans == "FRON2":
+            ans = 2
+        returnValue(ans)
 
 
 __server__ = AgilentDMMServer()
