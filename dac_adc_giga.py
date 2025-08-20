@@ -260,8 +260,42 @@ class DAC_ADCServer(DeviceServer):
 
     @setting(131,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
-       out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, int(delay*0.8 + 0.5), nReadings=nReadings)
-       returnValue(out)
+        
+        
+        # first, see if settlingTime is allowed
+        # check to see if buffer ramp is compatible with the current ADC configuration
+        convTimeSum = [0.0, 0.0, 0.0, 0.0]
+        numAdcChannels = len(adcPorts)
+        numAdcAverages = nReadings if nReadings is not None else 1
+
+        for i in range(numAdcChannels):
+            chNum = adcPorts[i]
+            board_num = chNum // 4
+            conv_time = yield self.get_conversion_time(c, chNum)
+            convTimeSum[board_num] += conv_time
+
+        maxConvTime = max(convTimeSum)
+        maxConvTimeTotal = maxConvTime * numAdcAverages
+        
+        
+
+        dac_settling_time_us = int(delay*0.8 + 0.5) # default settling time
+        dac_interval_us = delay
+        
+        
+        if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
+            dac_settling_time_us = 100
+            print(f"DAC settling time is too long for specified ADC conversion time, minimized settling time to {dac_settling_time_us}us")
+        
+        
+        if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
+            dac_interval_us = maxConvTimeTotal + dac_settling_time_us + 181
+            print(f"DAC interval is too short for specified ADC conversion time, made delay {dac_interval_us}us")
+        
+        
+        
+        out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, dac_interval_us, dac_settling_time_us, nReadings=nReadings)
+        returnValue(out)
 
     @setting(132,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp_dis(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,adcSteps,nReadings=1):
