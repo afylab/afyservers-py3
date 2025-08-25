@@ -286,7 +286,7 @@ class DAC_ADCServer(DeviceServer):
         if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
             dac_settling_time_us = dac_interval_us - maxConvTimeTotal - 181
             dac_settling_time_us = max(dac_settling_time_us, 100)
-            print(f"DAC settling time is too long for specified ADC conversion time, minimized settling time to {dac_settling_time_us}us")
+            # print(f"DAC settling time is too long for specified ADC conversion time, minimized settling time to {dac_settling_time_us}us")
         
         
         if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
