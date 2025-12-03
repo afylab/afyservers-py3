@@ -422,7 +422,7 @@ class DAC_ADCServer(DeviceServer):
 
     # @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     @setting(221,dacPorts='*i', voltageLists='**v[]',dacInterval='i',returns='**v[]')
-    def awg_buffer_ramp(self,c,dacPorts,voltageLists,dacInterval):
+    def generate_awg(self,c,dacPorts,voltageLists,dacInterval):
         """
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
         It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
@@ -463,23 +463,6 @@ class DAC_ADCServer(DeviceServer):
         dev.setramping(True)
 
 
-        extraBytes = b''
-        bytestoread = yield dev.in_waiting()
-
-        if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
-                bytestoread = yield dev.in_waiting()
-                if bytestoread > 0:
-                    tmp = yield dev.readByte(bytestoread)
-                    extraBytes += tmp
-
-        try:
-            decoded = extraBytes.decode('utf-8').strip()
-            if decoded.startswith('FAILURE'):
-                print(decoded)
-        except UnicodeDecodeError as e:
-            print(f"Decode error at byte {e.start}: {e.reason}")
-            print(f"Raw data: {extraBytes}")
 
         
         try:
