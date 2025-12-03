@@ -421,7 +421,7 @@ class DAC_ADCServer(DeviceServer):
         returnValue(channels)
 
     # @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
-    @setting(221,dacPorts='*i', adcPorts='*i', voltageLists='**v[]',dacInterval='i',returns='**v[]')
+    @setting(221,dacPorts='*i', voltageLists='**v[]',dacInterval='i',returns='**v[]')
     def awg_buffer_ramp(self,c,dacPorts,voltageLists,dacInterval):
         """
         BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
@@ -461,45 +461,7 @@ class DAC_ADCServer(DeviceServer):
         
         
         dev.setramping(True)
-        try:
-            while dev.isramping():
-                bytestoread = yield dev.in_waiting()
-                if bytestoread > 0:
-                    tmp = yield dev.readByte(bytestoread)
-                    data += tmp
 
-                if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
-                        bytestoread = yield dev.in_waiting()
-                        if bytestoread > 0:
-                            tmp = yield dev.readByte(bytestoread)
-                            data += tmp
-
-                    raise ValueError(data.decode('utf-8').strip())
-
-            dev.setramping(False)
-
-
-            for x in range(adcN):
-                channels.append([])
-            
-            for i in range(len(data) // 4):
-                voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
-
-                channel_index = i % adcN
-                channels[channel_index].append(float(voltage))
-            
-            # voltages = frombuffer(data, dtype=float32).tolist()
-
-            # for x in range(0, steps * adcN, adcN):
-            #     for y in range(adcN):
-            #         try:
-            #             channels[y].append(voltages[x + y])
-            #         except IndexError:
-            #             channels[y].append(0)
-        
-        except KeyboardInterrupt:
-            print('Stopped')
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
