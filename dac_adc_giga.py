@@ -428,43 +428,25 @@ class DAC_ADCServer(DeviceServer):
         It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
         """
         dacN = len(dacPorts)
-        sivoltages = ""
-        sfvoltages = ""
-        
-        sdacconfig = ""
-        
-        svoltageLists = ""
-
-
-        for x in range(dacN):
-            sdacconfig = f"{sdacconfig}{dacPorts[x]},"
-        
-        for i in voltageLists:
-            for j in i:
-                svoltageLists = f"{svoltageLists}{j},"
-        
-        svoltageLists = svoltageLists[:-1]
-
-        sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
-        sdacconfig = sdacconfig[:-1]
-
         numDacStepsPerLoop = len(voltageLists[0]) if voltageLists else 0
-
+        
         dev = self.selectedDevice(c)
-        # print(f"AWG_BUFFER_RAMP,{dacN},{adcN},{numLoops},{numDacStepsPerLoop},{nReadings},{dacInterval},{sdacconfig},{sadcconfig},{svoltageLists}")
-        yield dev.write(f"AWG_BUFFER_RAMP,{dacN},{numDacStepsPerLoop},{dacInterval},{sdacconfig},{svoltageLists}\r\n")
+        
+        # Build DAC channel config string
+        sdacconfig = ",".join(str(port) for port in dacPorts)
+        
+        svoltageLists = ",".join(str(v) for channel in voltageLists for v in channel)
+        cmd = f"AWG_BUFFER_RAMP,{dacN},{numDacStepsPerLoop},{dacInterval},{sdacconfig},{svoltageLists}\r\n"
+        print(cmd)
+        yield dev.write(cmd)
+        
         self.sigBufferRampStarted([dacPorts, [], voltageLists, str(0), str(numDacStepsPerLoop), str(dacInterval), str(0), str(0)])
 
         channels = []
         data = b''
         
-        
         dev.setramping(True)
 
-
-
-        
         try:
             yield dev.reset_input_buffer()
         except:
