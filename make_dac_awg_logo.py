@@ -1,0 +1,959 @@
+from __future__ import annotations
+
+"""
+Paint text or an SVG path using up to 4 DAC channels as vertically stacked traces.
+
+Usage:
+  python make_awg_logo.py --help
+"""
+
+import argparse
+import math
+import re
+import sys
+import xml.etree.ElementTree as ET
+from typing import List, Optional, Sequence, Tuple
+
+import labrad
+
+
+Point = Tuple[float, float]
+Segment = Tuple[Point, Point]
+Matrix = Tuple[float, float, float, float, float, float]  # a,b,c,d,e,f (SVG affine)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
+
+
+def _clamp10(v: float, *, blank: float) -> float:
+    # If anything goes non-finite, force to blank.
+    if not math.isfinite(v):
+        return _clamp(float(blank), -10.0, 10.0)
+    return _clamp(v, -10.0, 10.0)
+
+
+def _mat_mul(m2: Matrix, m1: Matrix) -> Matrix:
+    """
+    Compose transforms: apply m1 then m2.
+    SVG affine form:
+      x' = a*x + c*y + e
+      y' = b*x + d*y + f
+    """
+    a2, b2, c2, d2, e2, f2 = m2
+    a1, b1, c1, d1, e1, f1 = m1
+    return (
+        a2 * a1 + c2 * b1,
+        b2 * a1 + d2 * b1,
+        a2 * c1 + c2 * d1,
+        b2 * c1 + d2 * d1,
+        a2 * e1 + c2 * f1 + e2,
+        b2 * e1 + d2 * f1 + f2,
+    )
+
+
+def _mat_apply(m: Matrix, p: Point) -> Point:
+    a, b, c, d, e, f = m
+    x, y = p
+    return (a * x + c * y + e, b * x + d * y + f)
+
+
+def _identity() -> Matrix:
+    return (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+_NUM_RE = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+
+
+def _parse_floats(s: str) -> List[float]:
+    return [float(x) for x in re.findall(_NUM_RE, s)]
+
+
+def _parse_transform(transform: Optional[str]) -> Matrix:
+    if not transform:
+        return _identity()
+
+    t = transform.strip()
+    m = _identity()
+
+    # SVG allows multiple transforms: "translate(...) rotate(...) scale(...)"
+    # They are applied left-to-right.
+    for name, args in re.findall(r"([a-zA-Z]+)\s*\(([^)]*)\)", t):
+        vals = _parse_floats(args)
+        name = name.strip()
+
+        if name == "matrix" and len(vals) == 6:
+            tm: Matrix = (vals[0], vals[1], vals[2], vals[3], vals[4], vals[5])
+        elif name == "translate":
+            tx = vals[0] if len(vals) > 0 else 0.0
+            ty = vals[1] if len(vals) > 1 else 0.0
+            tm = (1.0, 0.0, 0.0, 1.0, tx, ty)
+        elif name == "scale":
+            sx = vals[0] if len(vals) > 0 else 1.0
+            sy = vals[1] if len(vals) > 1 else sx
+            tm = (sx, 0.0, 0.0, sy, 0.0, 0.0)
+        elif name == "rotate":
+            ang = (vals[0] if len(vals) > 0 else 0.0) * math.pi / 180.0
+            ca, sa = math.cos(ang), math.sin(ang)
+            rot = (ca, sa, -sa, ca, 0.0, 0.0)
+            if len(vals) >= 3:
+                cx, cy = vals[1], vals[2]
+                # T(cx,cy) * R * T(-cx,-cy)
+                tm = _mat_mul((1.0, 0.0, 0.0, 1.0, cx, cy), _mat_mul(rot, (1.0, 0.0, 0.0, 1.0, -cx, -cy)))
+            else:
+                tm = rot
+        elif name == "skewX":
+            ang = (vals[0] if len(vals) > 0 else 0.0) * math.pi / 180.0
+            tm = (1.0, 0.0, math.tan(ang), 1.0, 0.0, 0.0)
+        elif name == "skewY":
+            ang = (vals[0] if len(vals) > 0 else 0.0) * math.pi / 180.0
+            tm = (1.0, math.tan(ang), 0.0, 1.0, 0.0, 0.0)
+        else:
+            # Unknown transform: ignore (best-effort "any svg")
+            tm = _identity()
+
+        m = _mat_mul(tm, m)
+
+    return m
+
+
+def _linspace(a: float, b: float, n: int) -> List[float]:
+    if n <= 1:
+        return [a]
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
+def _sample_quad(p0: Point, p1: Point, p2: Point, n: int) -> List[Point]:
+    out: List[Point] = []
+    for t in _linspace(0.0, 1.0, n):
+        u = 1.0 - t
+        x = u * u * p0[0] + 2.0 * u * t * p1[0] + t * t * p2[0]
+        y = u * u * p0[1] + 2.0 * u * t * p1[1] + t * t * p2[1]
+        out.append((x, y))
+    return out
+
+
+def _sample_cubic(p0: Point, p1: Point, p2: Point, p3: Point, n: int) -> List[Point]:
+    out: List[Point] = []
+    for t in _linspace(0.0, 1.0, n):
+        u = 1.0 - t
+        x = (
+            u * u * u * p0[0]
+            + 3.0 * u * u * t * p1[0]
+            + 3.0 * u * t * t * p2[0]
+            + t * t * t * p3[0]
+        )
+        y = (
+            u * u * u * p0[1]
+            + 3.0 * u * u * t * p1[1]
+            + 3.0 * u * t * t * p2[1]
+            + t * t * t * p3[1]
+        )
+        out.append((x, y))
+    return out
+
+
+def _arc_to_points(
+    p0: Point,
+    rx: float,
+    ry: float,
+    x_axis_rotation_deg: float,
+    large_arc_flag: int,
+    sweep_flag: int,
+    p1: Point,
+    n: int,
+) -> List[Point]:
+    """
+    Approximate SVG elliptical arc with n points (including endpoints).
+    Implements the SVG arc conversion (endpoint → center parameterization).
+    Best-effort; handles the common case generated by editors (Inkscape/Illustrator).
+    """
+    x0, y0 = p0
+    x1, y1 = p1
+
+    rx = abs(rx)
+    ry = abs(ry)
+    if rx == 0.0 or ry == 0.0:
+        return [p0, p1]
+
+    phi = (x_axis_rotation_deg % 360.0) * math.pi / 180.0
+    cosphi = math.cos(phi)
+    sinphi = math.sin(phi)
+
+    # Step 1: compute (x1', y1')
+    dx = (x0 - x1) / 2.0
+    dy = (y0 - y1) / 2.0
+    x1p = cosphi * dx + sinphi * dy
+    y1p = -sinphi * dx + cosphi * dy
+
+    # Step 2: ensure radii are large enough
+    lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
+    if lam > 1.0:
+        s = math.sqrt(lam)
+        rx *= s
+        ry *= s
+
+    # Step 3: compute center (cx', cy')
+    rx2 = rx * rx
+    ry2 = ry * ry
+    x1p2 = x1p * x1p
+    y1p2 = y1p * y1p
+
+    sign = -1.0 if large_arc_flag == sweep_flag else 1.0
+    num = rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2
+    den = rx2 * y1p2 + ry2 * x1p2
+    # numerical guard
+    k = 0.0 if den == 0.0 else sign * math.sqrt(max(0.0, num / den))
+    cxp = k * (rx * y1p) / ry
+    cyp = k * (-ry * x1p) / rx
+
+    # Step 4: transform back to (cx, cy)
+    cx = cosphi * cxp - sinphi * cyp + (x0 + x1) / 2.0
+    cy = sinphi * cxp + cosphi * cyp + (y0 + y1) / 2.0
+
+    # Step 5: compute angles
+    def _angle(u: Point, v: Point) -> float:
+        dot = u[0] * v[0] + u[1] * v[1]
+        det = u[0] * v[1] - u[1] * v[0]
+        return math.atan2(det, dot)
+
+    ux = (x1p - cxp) / rx
+    uy = (y1p - cyp) / ry
+    vx = (-x1p - cxp) / rx
+    vy = (-y1p - cyp) / ry
+
+    theta1 = _angle((1.0, 0.0), (ux, uy))
+    dtheta = _angle((ux, uy), (vx, vy))
+
+    if sweep_flag == 0 and dtheta > 0:
+        dtheta -= 2.0 * math.pi
+    elif sweep_flag == 1 and dtheta < 0:
+        dtheta += 2.0 * math.pi
+
+    pts: List[Point] = []
+    for t in _linspace(0.0, 1.0, max(2, n)):
+        ang = theta1 + dtheta * t
+        xep = rx * math.cos(ang)
+        yep = ry * math.sin(ang)
+        # rotate back + translate
+        x = cosphi * xep - sinphi * yep + cx
+        y = sinphi * xep + cosphi * yep + cy
+        pts.append((x, y))
+
+    pts[0] = p0
+    pts[-1] = p1
+    return pts
+
+
+def _path_to_points(d: str, curve_samples: int) -> List[Point]:
+    tokens = re.findall(r"[AaCcHhLlMmQqSsTtVvZz]|" + _NUM_RE, d)
+    i = 0
+    cmd = None
+    cur: Point = (0.0, 0.0)
+    start: Point = (0.0, 0.0)
+    last_cubic_ctrl: Optional[Point] = None
+    last_quad_ctrl: Optional[Point] = None
+
+    pts: List[Point] = []
+
+    def _read(n: int) -> List[float]:
+        nonlocal i
+        vals = [float(tokens[i + k]) for k in range(n)]
+        i += n
+        return vals
+
+    def _add_point(p: Point) -> None:
+        if not pts or (abs(pts[-1][0] - p[0]) > 1e-12 or abs(pts[-1][1] - p[1]) > 1e-12):
+            pts.append(p)
+
+    while i < len(tokens):
+        t = tokens[i]
+        if re.fullmatch(r"[AaCcHhLlMmQqSsTtVvZz]", t):
+            cmd = t
+            i += 1
+        elif cmd is None:
+            raise ValueError("Invalid SVG path: missing initial command")
+
+        assert cmd is not None
+        c = cmd
+
+        if c in ("M", "m"):
+            x, y = _read(2)
+            if c == "m":
+                x += cur[0]
+                y += cur[1]
+            cur = (x, y)
+            start = cur
+            _add_point(cur)
+            cmd = "L" if c == "M" else "l"
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        elif c in ("L", "l"):
+            x, y = _read(2)
+            if c == "l":
+                x += cur[0]
+                y += cur[1]
+            cur = (x, y)
+            _add_point(cur)
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        elif c in ("H", "h"):
+            (x,) = _read(1)
+            x = x + cur[0] if c == "h" else x
+            cur = (x, cur[1])
+            _add_point(cur)
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        elif c in ("V", "v"):
+            (y,) = _read(1)
+            y = y + cur[1] if c == "v" else y
+            cur = (cur[0], y)
+            _add_point(cur)
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        elif c in ("C", "c"):
+            x1, y1, x2, y2, x, y = _read(6)
+            if c == "c":
+                x1 += cur[0]
+                y1 += cur[1]
+                x2 += cur[0]
+                y2 += cur[1]
+                x += cur[0]
+                y += cur[1]
+            p0 = cur
+            p1 = (x1, y1)
+            p2 = (x2, y2)
+            p3 = (x, y)
+            seg = _sample_cubic(p0, p1, p2, p3, curve_samples)
+            for p in seg[1:]:
+                _add_point(p)
+            cur = p3
+            last_cubic_ctrl = p2
+            last_quad_ctrl = None
+
+        elif c in ("S", "s"):
+            x2, y2, x, y = _read(4)
+            if c == "s":
+                x2 += cur[0]
+                y2 += cur[1]
+                x += cur[0]
+                y += cur[1]
+            p0 = cur
+            if last_cubic_ctrl is None:
+                p1 = cur
+            else:
+                p1 = (2.0 * cur[0] - last_cubic_ctrl[0], 2.0 * cur[1] - last_cubic_ctrl[1])
+            p2 = (x2, y2)
+            p3 = (x, y)
+            seg = _sample_cubic(p0, p1, p2, p3, curve_samples)
+            for p in seg[1:]:
+                _add_point(p)
+            cur = p3
+            last_cubic_ctrl = p2
+            last_quad_ctrl = None
+
+        elif c in ("Q", "q"):
+            x1, y1, x, y = _read(4)
+            if c == "q":
+                x1 += cur[0]
+                y1 += cur[1]
+                x += cur[0]
+                y += cur[1]
+            p0 = cur
+            p1 = (x1, y1)
+            p2 = (x, y)
+            seg = _sample_quad(p0, p1, p2, curve_samples)
+            for p in seg[1:]:
+                _add_point(p)
+            cur = p2
+            last_quad_ctrl = p1
+            last_cubic_ctrl = None
+
+        elif c in ("T", "t"):
+            x, y = _read(2)
+            if c == "t":
+                x += cur[0]
+                y += cur[1]
+            p0 = cur
+            if last_quad_ctrl is None:
+                p1 = cur
+            else:
+                p1 = (2.0 * cur[0] - last_quad_ctrl[0], 2.0 * cur[1] - last_quad_ctrl[1])
+            p2 = (x, y)
+            seg = _sample_quad(p0, p1, p2, curve_samples)
+            for p in seg[1:]:
+                _add_point(p)
+            cur = p2
+            last_quad_ctrl = p1
+            last_cubic_ctrl = None
+
+        elif c in ("A", "a"):
+            rx, ry, xrot, laf, sf, x, y = _read(7)
+            laf_i = int(laf)
+            sf_i = int(sf)
+            if c == "a":
+                x += cur[0]
+                y += cur[1]
+            p0 = cur
+            p1 = (x, y)
+            seg = _arc_to_points(p0, rx, ry, xrot, laf_i, sf_i, p1, curve_samples)
+            for p in seg[1:]:
+                _add_point(p)
+            cur = p1
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        elif c in ("Z", "z"):
+            cur = start
+            _add_point(cur)
+            last_cubic_ctrl = None
+            last_quad_ctrl = None
+
+        else:
+            raise ValueError(f"Unsupported SVG path command: {c}")
+
+    return pts
+
+
+def _points_to_segments(points: Sequence[Point]) -> List[Segment]:
+    segs: List[Segment] = []
+    for a, b in zip(points, points[1:]):
+        if abs(a[0] - b[0]) < 1e-12 and abs(a[1] - b[1]) < 1e-12:
+            continue
+        segs.append((a, b))
+    return segs
+
+
+def _tag_name(tag: str) -> str:
+    # Handle namespaces: "{http://www.w3.org/2000/svg}path" -> "path"
+    return tag.split("}", 1)[1] if "}" in tag else tag
+
+
+def _svg_segments(svg_path: str, curve_samples: int) -> List[Segment]:
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
+
+    segs: List[Segment] = []
+
+    def walk(elem: ET.Element, parent_tf: Matrix) -> None:
+        tf = _mat_mul(_parse_transform(elem.get("transform")), parent_tf)
+        tag = _tag_name(elem.tag)
+
+        if tag == "path" and elem.get("d"):
+            pts = _path_to_points(elem.get("d", ""), curve_samples=curve_samples)
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        elif tag == "polyline" and elem.get("points"):
+            vals = _parse_floats(elem.get("points", ""))
+            pts = [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        elif tag == "polygon" and elem.get("points"):
+            vals = _parse_floats(elem.get("points", ""))
+            pts = [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
+            if pts:
+                pts = pts + [pts[0]]
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        elif tag == "line":
+            x1 = float(elem.get("x1", "0"))
+            y1 = float(elem.get("y1", "0"))
+            x2 = float(elem.get("x2", "0"))
+            y2 = float(elem.get("y2", "0"))
+            p1 = _mat_apply(tf, (x1, y1))
+            p2 = _mat_apply(tf, (x2, y2))
+            segs.append((p1, p2))
+
+        elif tag == "rect":
+            x = float(elem.get("x", "0"))
+            y = float(elem.get("y", "0"))
+            w = float(elem.get("width", "0"))
+            h = float(elem.get("height", "0"))
+            pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        elif tag == "circle":
+            cx = float(elem.get("cx", "0"))
+            cy = float(elem.get("cy", "0"))
+            r = float(elem.get("r", "0"))
+            n = max(24, curve_samples * 2)
+            pts = []
+            for th in _linspace(0.0, 2.0 * math.pi, n):
+                pts.append((cx + r * math.cos(th), cy + r * math.sin(th)))
+            pts.append(pts[0])
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        elif tag == "ellipse":
+            cx = float(elem.get("cx", "0"))
+            cy = float(elem.get("cy", "0"))
+            rx = float(elem.get("rx", "0"))
+            ry = float(elem.get("ry", "0"))
+            n = max(24, curve_samples * 2)
+            pts = []
+            for th in _linspace(0.0, 2.0 * math.pi, n):
+                pts.append((cx + rx * math.cos(th), cy + ry * math.sin(th)))
+            pts.append(pts[0])
+            pts = [_mat_apply(tf, p) for p in pts]
+            segs.extend(_points_to_segments(pts))
+
+        # Recurse into children (groups, etc.)
+        for child in list(elem):
+            walk(child, tf)
+
+    walk(root, _identity())
+    return segs
+
+
+def _bbox(segs: Sequence[Segment]) -> Tuple[float, float, float, float]:
+    xs: List[float] = []
+    ys: List[float] = []
+    for (x1, y1), (x2, y2) in segs:
+        xs.extend([x1, x2])
+        ys.extend([y1, y2])
+    if not xs:
+        raise ValueError("SVG produced no segments (nothing to draw)")
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _build_segment_bins(segs: Sequence[Segment], x_min: float, x_max: float, nbins: int) -> List[List[Segment]]:
+    bins: List[List[Segment]] = [[] for _ in range(nbins)]
+    xr = x_max - x_min
+    if xr <= 0:
+        bins[0].extend(segs)
+        return bins
+
+    for s in segs:
+        (x1, _), (x2, _) = s
+        lo = min(x1, x2)
+        hi = max(x1, x2)
+        b0 = int(_clamp((lo - x_min) / xr, 0.0, 0.999999) * nbins)
+        b1 = int(_clamp((hi - x_min) / xr, 0.0, 0.999999) * nbins)
+        for b in range(min(b0, b1), max(b0, b1) + 1):
+            bins[b].append(s)
+    return bins
+
+
+def _intersections_at_x(
+    segs: Sequence[Segment],
+    x: float,
+    *,
+    x_tol: float,
+    vertical_samples: int,
+    eps: float = 1e-12,
+) -> List[float]:
+    ys: List[float] = []
+    for (x1, y1), (x2, y2) in segs:
+        if abs(x2 - x1) < eps:
+            # Vertical segment: a single x-sample can't "draw" a vertical line unless
+            # we emit multiple y-values at that same x. If the current scan x is
+            # close enough, sample a stack of y points along the segment.
+            if abs(x - x1) <= x_tol:
+                n = max(2, int(vertical_samples))
+                for t in _linspace(0.0, 1.0, n):
+                    ys.append(y1 + t * (y2 - y1))
+            continue
+        lo = min(x1, x2)
+        hi = max(x1, x2)
+        # include left endpoint, exclude right endpoint to reduce vertex double-counting
+        if not (lo - eps <= x < hi - eps):
+            continue
+        t = (x - x1) / (x2 - x1)
+        if 0.0 - 1e-9 <= t <= 1.0 + 1e-9:
+            ys.append(y1 + t * (y2 - y1))
+
+    ys.sort()
+    uniq: List[float] = []
+    for y in ys:
+        if not uniq or abs(y - uniq[-1]) > 1e-6:
+            uniq.append(y)
+    return uniq
+
+
+def _pick_traces(ys_sorted_top_to_bottom: Sequence[float], n_traces: int) -> List[float]:
+    n = len(ys_sorted_top_to_bottom)
+    if n == 0 or n_traces <= 0:
+        return []
+    if n <= n_traces:
+        return list(ys_sorted_top_to_bottom)
+    if n_traces == 1:
+        return [ys_sorted_top_to_bottom[0]]
+
+    idxs = [int(round(i * (n - 1) / (n_traces - 1))) for i in range(n_traces)]
+    picked = [ys_sorted_top_to_bottom[j] for j in idxs]
+    picked.sort()
+    return picked
+
+
+# =============================================================================
+# HERSHEY FONT - Single-stroke vector font for text rendering
+# =============================================================================
+# Hershey fonts are single-line strokes designed for plotters.
+# Each glyph is a list of strokes, each stroke is a list of (x, y) points.
+# Coordinates are in a grid where characters are roughly 21 units tall.
+# A value of None indicates pen-up (move without drawing).
+
+HERSHEY_SCRIPT = {
+    'a': [(0,14), (0,21), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,17), (11,21), (11,14)],
+    'b': [(0,0), (0,21), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,17), (11,19), (10,21), (7,21), (0,17)],
+    'c': [(11,17), (10,15), (7,14), (5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (7,21), (10,20)],
+    'd': [(11,0), (11,21), None, (11,17), (10,15), (7,14), (5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (11,17)],
+    'e': [(0,19), (11,19), (11,17), (10,15), (7,14), (5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (7,21), (10,20)],
+    'f': [(8,0), (6,0), (4,2), (4,21), None, (0,14), (9,14)],
+    'g': [(11,14), (11,28), (10,30), (7,31), (5,31), None, (11,17), (10,15), (7,14), (5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (11,17)],
+    'h': [(0,0), (0,21), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,17), (11,21)],
+    'i': [(0,14), (0,17), (2,14), (2,21), None, (2,7), (1,8), (2,9), (3,8), (2,7)],
+    'j': [(4,14), (4,28), (2,31), (0,31), None, (4,7), (3,8), (4,9), (5,8), (4,7)],
+    'k': [(0,0), (0,21), None, (10,14), (0,19), None, (4,17), (11,21)],
+    'l': [(0,0), (0,17), (2,20), (4,21), (6,21)],
+    'm': [(0,21), (0,14), None, (0,17), (2,15), (4,14), (5,14), (7,15), (8,17), (8,21), None, (8,17), (10,15), (12,14), (13,14), (15,15), (16,17), (16,21)],
+    'n': [(0,21), (0,14), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,17), (11,21)],
+    'o': [(5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (7,21), (10,19), (10,17), (8,15), (5,14)],
+    'p': [(0,14), (0,31), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,17), (11,19), (10,21), (7,21), (0,17)],
+    'q': [(11,14), (11,31), None, (11,17), (10,15), (7,14), (5,14), (2,15), (0,17), (0,19), (2,21), (5,21), (11,17)],
+    'r': [(0,21), (0,14), None, (0,17), (2,15), (5,14), (7,14), (10,15), (11,16)],
+    's': [(11,16), (10,15), (7,14), (4,14), (1,15), (0,16), (0,17), (1,18), (10,20), (11,21), (10,21), (7,21), (4,21), (1,20), (0,19)],
+    't': [(4,0), (4,17), (5,20), (7,21), (9,21), None, (0,14), (9,14)],
+    'u': [(0,14), (0,19), (2,21), (5,21), (7,21), (10,19), (11,14), None, (11,14), (11,21)],
+    'v': [(0,14), (5,21), (10,14)],
+    'w': [(0,14), (3,21), (6,17), (9,21), (12,14)],
+    'x': [(0,14), (10,21), None, (10,14), (0,21)],
+    'y': [(0,14), (5,21), None, (10,14), (3,28), (1,31), (0,31)],
+    'z': [(0,14), (10,14), (0,21), (10,21)],
+    'A': [(0,21), (5,0), (10,21), None, (2,14), (8,14)],
+    'B': [(0,21), (0,0), (6,0), (9,1), (10,3), (10,5), (9,7), (6,9), (0,9), (6,9), (9,10), (10,12), (10,17), (9,19), (6,21), (0,21)],
+    'C': [(10,4), (9,2), (7,0), (5,0), (2,1), (0,5), (0,16), (2,20), (5,21), (7,21), (9,19), (10,17)],
+    'D': [(0,21), (0,0), (5,0), (8,1), (10,4), (11,9), (11,12), (10,17), (8,20), (5,21), (0,21)],
+    'E': [(10,0), (0,0), (0,21), (10,21), None, (0,11), (6,11)],
+    'F': [(10,0), (0,0), (0,21), None, (0,11), (6,11)],
+    'G': [(10,4), (9,2), (7,0), (5,0), (2,1), (0,5), (0,16), (2,20), (5,21), (7,21), (9,19), (10,16), (10,11), (6,11)],
+    'H': [(0,0), (0,21), None, (10,0), (10,21), None, (0,11), (10,11)],
+    'I': [(0,0), (6,0), None, (3,0), (3,21), None, (0,21), (6,21)],
+    'J': [(7,0), (7,17), (5,20), (3,21), (2,21), (0,19), (0,17)],
+    'K': [(0,0), (0,21), None, (10,0), (0,12), None, (4,8), (10,21)],
+    'L': [(0,0), (0,21), (10,21)],
+    'M': [(0,21), (0,0), (5,14), (10,0), (10,21)],
+    'N': [(0,21), (0,0), (10,21), (10,0)],
+    'O': [(5,0), (2,1), (0,5), (0,16), (2,20), (5,21), (7,21), (10,19), (11,16), (11,5), (10,1), (7,0), (5,0)],
+    'P': [(0,21), (0,0), (6,0), (9,1), (10,3), (10,7), (9,9), (6,11), (0,11)],
+    'Q': [(5,0), (2,1), (0,5), (0,16), (2,20), (5,21), (7,21), (10,19), (11,16), (11,5), (10,1), (7,0), (5,0), None, (7,17), (11,23)],
+    'R': [(0,21), (0,0), (6,0), (9,1), (10,3), (10,7), (9,9), (6,11), (0,11), None, (5,11), (10,21)],
+    'S': [(10,3), (9,1), (6,0), (4,0), (1,1), (0,3), (0,5), (1,7), (3,9), (7,11), (9,13), (10,15), (10,18), (9,20), (6,21), (4,21), (1,20), (0,18)],
+    'T': [(5,0), (5,21), None, (0,0), (10,0)],
+    'U': [(0,0), (0,16), (1,19), (3,21), (6,21), (8,19), (10,16), (10,0)],
+    'V': [(0,0), (5,21), (10,0)],
+    'W': [(0,0), (2,21), (5,10), (8,21), (10,0)],
+    'X': [(0,0), (10,21), None, (10,0), (0,21)],
+    'Y': [(0,0), (5,10), (10,0), None, (5,10), (5,21)],
+    'Z': [(0,0), (10,0), (0,21), (10,21)],
+    ' ': [],  # space - no strokes, just advance
+    '0': [(5,0), (2,1), (0,5), (0,16), (2,20), (5,21), (7,21), (10,19), (11,16), (11,5), (10,1), (7,0), (5,0)],
+    '1': [(3,4), (5,2), (5,21)],
+    '2': [(1,5), (2,2), (4,0), (6,0), (9,2), (10,5), (10,7), (0,21), (10,21)],
+    '3': [(1,3), (2,1), (5,0), (7,0), (10,2), (10,5), (9,8), (6,10), (9,12), (10,15), (10,18), (9,20), (6,21), (3,21), (1,19)],
+    '4': [(7,21), (7,0), (0,14), (11,14)],
+    '5': [(10,0), (2,0), (0,10), (3,8), (6,8), (9,10), (10,13), (10,17), (8,20), (5,21), (2,21), (0,19)],
+    '6': [(9,3), (7,1), (4,0), (3,0), (0,3), (0,16), (2,20), (5,21), (6,21), (9,19), (10,16), (10,14), (8,11), (5,10), (3,10), (0,13)],
+    '7': [(0,0), (10,0), (4,21)],
+    '8': [(4,0), (1,1), (0,4), (0,6), (1,9), (5,11), (8,13), (10,16), (10,18), (9,20), (6,21), (4,21), (1,20), (0,18), (0,16), (2,13), (5,11), (9,9), (10,6), (10,4), (9,1), (6,0), (4,0)],
+    '9': [(10,8), (7,11), (5,11), (2,10), (0,7), (0,5), (2,2), (5,0), (6,0), (9,2), (10,5), (10,18), (8,21), (5,21), (3,19)],
+    '.': [(2,20), (1,21), (2,22), (3,21), (2,20)],
+    ',': [(2,20), (1,21), (0,24)],
+    '!': [(2,0), (2,14), None, (2,19), (1,20), (2,21), (3,20), (2,19)],
+    '?': [(1,5), (2,2), (4,0), (6,0), (8,2), (9,5), (9,7), (8,9), (6,11), (5,12), (5,14), None, (5,19), (4,20), (5,21), (6,20), (5,19)],
+    '-': [(0,11), (8,11)],
+    "'": [(2,0), (1,5)],
+    ':': [(2,7), (1,8), (2,9), (3,8), (2,7), None, (2,19), (1,20), (2,21), (3,20), (2,19)],
+}
+
+# Character widths for Hershey font
+HERSHEY_WIDTHS = {
+    'a': 13, 'b': 13, 'c': 12, 'd': 13, 'e': 12, 'f': 10, 'g': 13, 'h': 13,
+    'i': 6, 'j': 6, 'k': 12, 'l': 8, 'm': 18, 'n': 13, 'o': 12, 'p': 13,
+    'q': 13, 'r': 12, 's': 12, 't': 10, 'u': 13, 'v': 11, 'w': 14, 'x': 11,
+    'y': 11, 'z': 11,
+    'A': 12, 'B': 12, 'C': 12, 'D': 13, 'E': 11, 'F': 11, 'G': 13, 'H': 12,
+    'I': 8, 'J': 9, 'K': 12, 'L': 11, 'M': 12, 'N': 12, 'O': 13, 'P': 12,
+    'Q': 13, 'R': 12, 'S': 12, 'T': 11, 'U': 12, 'V': 11, 'W': 12, 'X': 12,
+    'Y': 11, 'Z': 11,
+    ' ': 8, '0': 13, '1': 7, '2': 11, '3': 11, '4': 12, '5': 11, '6': 11,
+    '7': 11, '8': 11, '9': 11, '.': 5, ',': 4, '!': 5, '?': 10, '-': 9,
+    "'": 4, ':': 5,
+}
+
+
+def _generate_hershey_text(text: str, italic_angle: float = 15.0) -> Tuple[List[List[Point]], float, float, float, float]:
+    """
+    Generate strokes for text using Hershey font.
+    Returns (list_of_strokes, x_min, y_min, x_max, y_max).
+    Each stroke is a list of (x, y) points forming a continuous line.
+    
+    italic_angle: Slant angle in degrees (default 15). Positive = lean right.
+                  This shears the text so vertical strokes become diagonal,
+                  making them easier to render with vertical-line scanning.
+    """
+    # Shear factor: x' = x + y * shear (positive shear leans right)
+    # We shear based on distance from baseline (y=21 in Hershey coords)
+    shear = math.tan(math.radians(italic_angle))
+    baseline_y = 21.0
+    
+    strokes: List[List[Point]] = []
+    x_offset = 0.0
+    x_max = 0.0
+    
+    for char in text:
+        if char not in HERSHEY_SCRIPT:
+            # Unknown character - treat as space
+            x_offset += HERSHEY_WIDTHS.get(' ', 8)
+            continue
+        
+        glyph = HERSHEY_SCRIPT[char]
+        width = HERSHEY_WIDTHS.get(char, 10)
+        
+        if not glyph:
+            x_offset += width + 2
+            continue
+        
+        current_stroke: List[Point] = []
+        for pt in glyph:
+            if pt is None:
+                if len(current_stroke) >= 2:
+                    strokes.append(current_stroke)
+                current_stroke = []
+            else:
+                orig_x = pt[0] + x_offset
+                orig_y = pt[1]
+                shear_amount = (baseline_y - orig_y) * shear
+                new_x = orig_x + shear_amount
+                current_stroke.append((new_x, orig_y))
+        
+        if len(current_stroke) >= 2:
+            strokes.append(current_stroke)
+        
+        x_offset += width + 2
+        x_max = x_offset
+    
+    if not strokes:
+        return [], 0, 0, 1, 1
+    
+    all_pts = [pt for stroke in strokes for pt in stroke]
+    xs = [p[0] for p in all_pts]
+    ys = [p[1] for p in all_pts]
+    
+    trailing_space = HERSHEY_WIDTHS.get(' ', 8) + 2
+    
+    return strokes, min(xs), min(ys), max(xs) + trailing_space, max(ys)
+
+
+def _strokes_to_segments(strokes: List[List[Point]]) -> List[Segment]:
+    segments: List[Segment] = []
+    for stroke in strokes:
+        for i in range(len(stroke) - 1):
+            segments.append((stroke[i], stroke[i + 1]))
+    return segments
+
+
+def main(argv: Sequence[str]) -> int:
+    ap = argparse.ArgumentParser(
+        description="Paint an SVG or text using DAC channels. "
+                    "Uses up to 4 channels (vertically stacked traces for overlapping strokes)."
+    )
+    ap.add_argument("svg", nargs='?', default=None, help="Path to SVG file. (Optional if --text is used)")
+    ap.add_argument("--text", type=str, default=None, help="Generate text using Hershey vector font instead of SVG.")
+    ap.add_argument("--max-channels", type=int, default=4, help="Maximum DAC channels to use (1-4). Default: 4")
+    ap.add_argument("--num-steps", type=int, default=400, help="Number of samples for the waveform. Default: 400")
+    ap.add_argument(
+        "--bidirectional",
+        action="store_true",
+        default=False,
+        help="Also scan right->left (mirrors in x/time). Default: off.",
+    )
+    ap.add_argument("--delay-us", type=int, default=1000, help="Sample period in microseconds (dacInterval). Default: 1000")
+    ap.add_argument("--amp", type=float, default=5.0, help="Vertical amplitude (peak) in volts. Default: 5.0")
+    ap.add_argument("--y-offset", type=float, default=0.0, help="Vertical offset in volts. Default: 0.0")
+    ap.add_argument("--blank", type=float, default=-10.0, help="Voltage to output when no intersection exists. Default: -10.0")
+    ap.add_argument(
+        "--invert-y",
+        action="store_true",
+        default=False,
+        help="Invert y mapping (flip vertically). Default: off.",
+    )
+    ap.add_argument("--curve-samples", type=int, default=20, help="Samples per curve segment when flattening paths. Default: 20")
+    ap.add_argument("--bins", type=int, default=256, help="Acceleration bins along x for intersection tests. Default: 256")
+    args = ap.parse_args(list(argv))
+
+    max_ch = int(args.max_channels)
+    if not (1 <= max_ch <= 4):
+        raise ValueError("--max-channels must be between 1 and 4")
+    if args.num_steps < 2:
+        raise ValueError("--num-steps must be >= 2")
+
+    blank_v = _clamp(float(args.blank), -10.0, 10.0)
+
+    # TEXT MODE: Generate text using Hershey font, use same multi-channel approach as SVG
+    if args.text is not None:
+        print(f"Generating text: \"{args.text}\"")
+        
+        strokes, x_min, y_min, x_max, y_max = _generate_hershey_text(args.text)
+        
+        if not strokes:
+            raise ValueError("Text contains no drawable characters")
+        
+        segs = _strokes_to_segments(strokes)
+        
+        print(f"Text bbox: x=[{x_min:.1f}, {x_max:.1f}] y=[{y_min:.1f}, {y_max:.1f}]")
+        print(f"Generated {len(segs)} line segments from {len(strokes)} strokes")
+        
+        is_text_mode = True
+        
+    
+    # SVG MODE: Load segments from SVG file
+    elif args.svg is not None:
+        segs = _svg_segments(args.svg, curve_samples=max(4, int(args.curve_samples)))
+        x_min, y_min, x_max, y_max = _bbox(segs)
+        is_text_mode = False
+    
+    else:
+        raise ValueError("Must provide either an SVG file or --text argument")
+    
+    # COMMON: Multi-channel vertical intersection scanning
+    xr = x_max - x_min
+    yr = y_max - y_min
+
+    if xr <= 0 or yr <= 0:
+        raise ValueError(f"Degenerate bbox: x_range={xr}, y_range={yr}")
+
+    xs_fwd = [x_min + xr * i / (args.num_steps - 1) for i in range(args.num_steps)]
+    x_step = xr / (args.num_steps - 1)
+    # Intersection "snap" tolerance in SVG units: treat nearly-aligned vertical strokes
+    # as intersecting this scan column.
+    x_tol = max(1e-12, 0.55 * x_step)
+    if args.bidirectional:
+        xs = xs_fwd + xs_fwd[-2:0:-1]  # exclude endpoints on return
+    else:
+        xs = xs_fwd
+
+    bins = _build_segment_bins(segs, x_min, x_max, nbins=max(1, int(args.bins)))
+    vertical_samples = max(8, 2 * max_ch)
+
+    max_int = 0
+    for x in xs_fwd:
+        bi = int(_clamp((x - x_min) / xr, 0.0, 0.999999) * len(bins))
+        ys = _intersections_at_x(bins[bi], x, x_tol=x_tol, vertical_samples=vertical_samples)
+        if len(ys) > max_int:
+            max_int = len(ys)
+
+    used_channels = min(max_ch, max_int if max_int > 0 else 1)
+
+    if args.text is not None:
+        print(f"Text: \"{args.text}\"")
+    else:
+        print(f"SVG: {args.svg}")
+    print(f"bbox: x=[{x_min:.3f}, {x_max:.3f}] y=[{y_min:.3f}, {y_max:.3f}]")
+    print(f"forward steps: {args.num_steps}  total samples sent: {len(xs)}  delay: {args.delay_us} us")
+    print(f"max intersections across x: {max_int}")
+    print(f"using {used_channels} DAC channel(s): ports {list(range(used_channels))}")
+    print("channel mapping: highest port = top-most intersection; port 0 = bottom-most intersection")
+    print(f"y mapping: {'inverted' if args.invert_y else 'non-inverted'}")
+    print(f"x scan: {'bidirectional' if args.bidirectional else 'forward-only'}")
+
+    y_mid = (y_min + y_max) / 2.0
+    # Map SVG y-range to +/- amp.
+    #
+    # NOTE: SVG y+ is down. By default we INVERT so SVG-up maps to +V (correct orientation).
+    # Use --invert-y flag if you need the opposite mapping.
+    y_scale = -(2.0 * float(args.amp)) / yr  # negative: SVG-up → +V
+
+    dac_ports = list(range(used_channels))
+    
+    def compute_voltages(starting_y_svg: List[Optional[float]], starting_voltage: List[float]) -> Tuple[List[List[float]], List[Optional[float]], List[float]]:
+        """Run the scan and return (voltage_lists, final_y_svg, final_voltage)."""
+        voltage_lists_inner: List[List[float]] = [[] for _ in range(used_channels)]
+        last_y_svg = list(starting_y_svg)
+        last_voltage = list(starting_voltage)
+        
+        for x in xs:
+            bi = int(_clamp((x - x_min) / xr, 0.0, 0.999999) * len(bins))
+            ys = _intersections_at_x(bins[bi], x, x_tol=x_tol, vertical_samples=vertical_samples)
+            picked = _pick_traces(ys, used_channels)
+            
+            # For text mode: unassigned channels jump to edge based on last position
+            # For SVG mode: unassigned channels hold their last value
+            if is_text_mode:
+                vals = [10.0 if lv > 0 else -10.0 for lv in last_voltage]
+            else:
+                vals = list(last_voltage)
+            new_y_svg: List[Optional[float]] = [None] * used_channels
+            
+            if len(picked) > 0:
+                unassigned_picked = list(picked)
+                assigned_channels = [False] * used_channels
+                
+                for ch in range(used_channels):
+                    if last_y_svg[ch] is not None and len(unassigned_picked) > 0:
+                        best_idx = min(range(len(unassigned_picked)), 
+                                       key=lambda i: abs(unassigned_picked[i] - last_y_svg[ch]))
+                        y_svg = unassigned_picked[best_idx]
+                        unassigned_picked.pop(best_idx)
+                        
+                        dv = (y_svg - y_mid) * y_scale
+                        if args.invert_y:
+                            dv = -dv
+                        v = dv + float(args.y_offset)
+                        vals[ch] = _clamp10(v, blank=blank_v)
+                        new_y_svg[ch] = y_svg
+                        assigned_channels[ch] = True
+                
+                for y_svg in reversed(unassigned_picked):
+                    for ch in range(used_channels):
+                        if not assigned_channels[ch]:
+                            dv = (y_svg - y_mid) * y_scale
+                            if args.invert_y:
+                                dv = -dv
+                            v = dv + float(args.y_offset)
+                            vals[ch] = _clamp10(v, blank=blank_v)
+                            new_y_svg[ch] = y_svg
+                            assigned_channels[ch] = True
+                            break
+            
+            if not is_text_mode:
+                for ch in range(used_channels):
+                    if new_y_svg[ch] is None:
+                        new_y_svg[ch] = last_y_svg[ch]
+            
+            last_y_svg = new_y_svg
+            last_voltage = vals
+            
+            for port in range(used_channels):
+                voltage_lists_inner[port].append(_clamp10(vals[port], blank=blank_v))
+        
+        return voltage_lists_inner, last_y_svg, last_voltage
+    
+    # First pass: compute with blank starting values to find what the END values are.
+    _, end_y_svg, end_voltage = compute_voltages([None] * used_channels, [blank_v] * used_channels)
+    
+    # Second pass: use end values as starting values for seamless loop.
+    voltage_lists, _, _ = compute_voltages(end_y_svg, end_voltage)
+
+    # Final safety clamp (guards against any weird edge case).
+    for port in range(used_channels):
+        voltage_lists[port] = [_clamp10(v, blank=blank_v) for v in voltage_lists[port]]
+
+    cxn = labrad.connect()
+    da = cxn.dac_adc_giga
+    da.select_device()
+    da.generate_awg(dac_ports, voltage_lists, int(args.delay_us))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+
