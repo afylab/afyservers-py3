@@ -1480,16 +1480,14 @@ class DAC_ADCServer(DeviceServer):
         returnValue(ans)
 
     @setting(121)
-    def set_offset_and_gain(self,c,offset_and_gain):
+    def set_offset_and_gain(self,c,channel,offset,gain):
         """
         Set the offset and gain for all DAC channels.
         """
         dev=self.selectedDevice(c)
-        message = "SET_OSG" + ",%f"*8 + "\r\n"
-        yield dev.write(message%(tuple(offset_and_gain)))
-        ans = [0]*8
-        for i in range(8):
-            ans[i] = yield dev.read()
+        message = f"SET_OSG,{channel},{offset},{gain}\r\n"
+        yield dev.write(message)
+        ans = yield dev.read()
 
         returnValue(ans)
 
