@@ -1520,7 +1520,7 @@ class DAC_ADCServer(DeviceServer):
         """
         SET_DAC_CODE writes a code between 0 and 1048576 to a channel and returns the channel and the code written to that DAC's register.
         """
-        if not (channel in range(4)):
+        if not (channel in range(8)):
             returnValue("Error: invalid port number.")
             return
         if (code > 1048576) or (code < 0):

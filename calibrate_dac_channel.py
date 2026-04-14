@@ -34,9 +34,9 @@ ag = cxn.agilent_34401a_dmm()
 ag.select_device()
 
 ### calibrate offset
-ag.configure_voltage(0.001, 0.00000001)
+ag.configure_voltage(0.01, 0.0000001)
 
-da.set_offset_and_gain(channel, 0, 1)
+# da.set_offset_and_gain(channel, 0, 1)
 
 dac_code = 0
 da.set_dac_code(channel,dac_code)
@@ -79,7 +79,7 @@ print(f"OFFSET CALIBRATED. OLD 0 V = {old_ag_value} V; NEW 0 V = {ag.read_voltag
 
 ### calibrate gain
 
-ag.configure_voltage(10, 0.001)
+ag.configure_voltage(10, 0.00001)
 
 da.set_voltage(channel, 10)
 
