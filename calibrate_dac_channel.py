@@ -24,6 +24,21 @@ channel = 0
 
 lsb_size = 20/(2**20 - 1) # V
 
+
+def dac_code_to_voltage(dac_code):
+    if dac_code <= 524287:
+        return dac_code * 10 / 524287
+    else:
+        return (dac_code - 1048576) * 10 / 524288
+
+
+def voltage_to_dac_code(voltage):
+    if voltage >= 0:
+        return voltage * 524287 / 10
+    else:
+        return voltage * 524288 / 10 + 1048576
+
+
 cxn = labrad.connect()
 
 da = cxn.dac_adc_giga()
@@ -34,15 +49,27 @@ ag = cxn.agilent_34401a_dmm()
 ag.select_device()
 
 ### calibrate offset
-ag.configure_voltage(0.01, 0.0000001)
 
-# da.set_offset_and_gain(channel, 0, 1)
-
+# quickly find heuristic
+ag.configure_voltage(10, 0.00001)
 dac_code = 0
 da.set_dac_code(channel,dac_code)
 
+old_ag_value = ag.read_voltage()
+
+heuristic_dac_code = voltage_to_dac_code(-1.0 * old_ag_value)
+
+da.set_dac_code(channel,heuristic_dac_code)
 ag_value = ag.read_voltage()
-old_ag_value = ag_value
+print(f"HEURISTIC DAC CODE: {heuristic_dac_code}, AG VALUE: {ag_value}")
+
+# sweep until +/- 1 LSB measured.
+ag.configure_voltage(0.01, 0.0000001)
+
+dac_code = heuristic_dac_code
+da.set_dac_code(channel,dac_code)
+
+ag_value = ag.read_voltage()
 
 if ag_value > 0:
     direction = -1
