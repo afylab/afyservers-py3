@@ -105,9 +105,9 @@ da.set_dac_code(channel,dac_code)
 
 print(f"DAC code: {dac_code}, AG value: {ag_value}")
 
-dac_voltage = da.read_dac_voltage(channel)
+offset = -dac_code_to_voltage(dac_code)
 
-da.set_offset_and_gain(channel, -dac_voltage, 1)
+da.set_offset_and_gain(channel, offset, 1)
 
 da.set_voltage(channel, 0)
 
@@ -124,7 +124,7 @@ old_10v = ag_value
 
 gain = ag_value/10
 
-da.set_offset_and_gain(channel, -dac_voltage, gain)
+da.set_offset_and_gain(channel, offset, gain)
 
 da.set_voltage(channel, 10)
 
