@@ -2,6 +2,7 @@ from itertools import chain
 import labrad
 import numpy as np
 import matplotlib.pyplot as plt
+from time import sleep
 
 """
 1) set dac code to 0
@@ -34,9 +35,9 @@ def dac_code_to_voltage(dac_code):
 
 def voltage_to_dac_code(voltage):
     if voltage >= 0:
-        return voltage * 524287 / 10
+        return int(voltage * 524287 / 10)
     else:
-        return voltage * 524288 / 10 + 1048576
+        return int(voltage * 524288 / 10) + 1048576
 
 
 cxn = labrad.connect()
@@ -52,51 +53,59 @@ ag.select_device()
 
 # quickly find heuristic
 ag.configure_voltage(10, 0.00001)
+
 dac_code = 0
 da.set_dac_code(channel,dac_code)
-
+sleep(0.1)
 old_ag_value = ag.read_voltage()
 
 heuristic_dac_code = voltage_to_dac_code(-1.0 * old_ag_value)
 
+ag.configure_voltage(0.01, 0.0000001)
 da.set_dac_code(channel,heuristic_dac_code)
+sleep(0.1)
 ag_value = ag.read_voltage()
 print(f"HEURISTIC DAC CODE: {heuristic_dac_code}, AG VALUE: {ag_value}")
 
 # sweep until +/- 1 LSB measured.
-ag.configure_voltage(0.01, 0.0000001)
+# ag.configure_voltage(0.01, 0.0000001)
 
 dac_code = heuristic_dac_code
 da.set_dac_code(channel,dac_code)
-
+sleep(0.1)
 ag_value = ag.read_voltage()
+
+MAX_CODE = 2**20 - 1
 
 if ag_value > 0:
     direction = -1
-    dac_code = 1048576
 else:
     direction = 1
 
-dac_code += direction
 
 while abs(ag_value) > lsb_size:
-    da.set_dac_code(channel,dac_code)
+    dac_code = (dac_code + direction) % (MAX_CODE + 1)
+    da.set_dac_code(channel, dac_code)
+    sleep(0.1)
     ag_value = ag.read_voltage()
-    dac_code += direction
+
+dac_code = (dac_code + direction) % (MAX_CODE + 1)
 
 da.set_dac_code(channel,dac_code)
+sleep(0.1)
 ag_value_2 = ag.read_voltage()
 
 
 if abs(ag_value_2) < abs(ag_value):
     ag_value = ag_value_2
 else:
-    dac_code -= direction
+    dac_code = (dac_code - direction) % (MAX_CODE + 1)
+
+da.set_dac_code(channel,dac_code)
 
 print(f"DAC code: {dac_code}, AG value: {ag_value}")
 
 dac_voltage = da.read_dac_voltage(channel)
-print(f"DAC voltage: {dac_voltage} V")
 
 da.set_offset_and_gain(channel, -dac_voltage, 1)
 
@@ -109,7 +118,7 @@ print(f"OFFSET CALIBRATED. OLD 0 V = {old_ag_value} V; NEW 0 V = {ag.read_voltag
 ag.configure_voltage(10, 0.00001)
 
 da.set_voltage(channel, 10)
-
+sleep(0.1)
 ag_value = ag.read_voltage()
 old_10v = ag_value
 
