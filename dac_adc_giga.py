@@ -1559,7 +1559,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)
-        yield dev.write(phrase)
+        yield dev.write(f"{phrase}\r\n")
         ret = yield dev.read()
         returnValue(ret)
 
