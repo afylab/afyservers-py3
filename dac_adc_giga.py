@@ -317,33 +317,22 @@ class DAC_ADCServer(DeviceServer):
         """
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacPorts = ""
-        sadcPorts = ""
-        sivoltages = ""
-        sfvoltages = ""
-        
-        sdacconfig = ""
-        sadcconfig = ""
-
-
-        for x in range(dacN):
-            sdacPorts = sdacPorts + str(dacPorts[x])
-            sivoltages = sivoltages + str(ivoltages[x]) + ","
-            sfvoltages = sfvoltages + str(fvoltages[x]) + ","
-            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
-
-        sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "DAC_LED_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(steps),
+            str(nReadings),
+            str(dacInterval),
+            str(dacSettlingTime),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages],
+            *[str(v) for v in fvoltages],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\r\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
@@ -435,13 +424,17 @@ class DAC_ADCServer(DeviceServer):
         
         dev = self.selectedDevice(c)
         
-        # Build DAC channel config string
-        sdacconfig = ",".join(str(port) for port in dacPorts)
-        
-        svoltageLists = ",".join(str(v) for channel in voltageLists for v in channel)
-        cmd = f"AWG_BUFFER_RAMP,{dacN},{numDacStepsPerLoop},{dacInterval},{sdacconfig},{svoltageLists}\r\n"
-        print(cmd)
-        yield dev.write(cmd)
+        command_parts = [
+            "AWG_BUFFER_RAMP",
+            str(dacN),
+            str(numDacStepsPerLoop),
+            str(dacInterval),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for channel in voltageLists for v in channel],
+        ]
+        command = ",".join(command_parts) + "\r\n"
+        print(command)
+        yield dev.write(command)
         
         self.sigBufferRampStarted([dacPorts, [], voltageLists, str(0), str(numDacStepsPerLoop), str(dacInterval), str(0), str(0)])
 
@@ -473,15 +466,20 @@ class DAC_ADCServer(DeviceServer):
         if adcPorts:
             conv_time_us = yield self.get_conversion_time(c, adcPorts[0])
 
-        # Build command string
-        sdac_ports = ",".join(str(ch) for ch in dacPorts)
-        sadc_ports = ",".join(str(ch) for ch in adcPorts)
-        svoltages = ",".join(str(v) for channel in voltageLists for v in channel)
-
-        cmd = f"AWG_WITH_ADC,{dacN},{adcN},{numSteps},{dacInterval_us},{numCycles},{sdac_ports},{sadc_ports},{svoltages}\r\n"
+        command_parts = [
+            "AWG_WITH_ADC",
+            str(dacN),
+            str(adcN),
+            str(numSteps),
+            str(dacInterval_us),
+            str(numCycles),
+            *[str(ch) for ch in dacPorts],
+            *[str(ch) for ch in adcPorts],
+            *[str(v) for channel in voltageLists for v in channel],
+        ]
 
         dev = self.selectedDevice(c)
-        yield dev.write(cmd)
+        yield dev.write(",".join(command_parts) + "\r\n")
 
         channels = [[] for _ in range(adcN)]
         data = b''
@@ -608,12 +606,6 @@ class DAC_ADCServer(DeviceServer):
         dac_interval = float(dacInterval_us)
         adc_interval = float(adcInterval_us)
 
-        sdac_ports = ",".join(str(ch) for ch in dacPorts)
-        sstart_point = ",".join(f"{v}" for v in start_point)
-        sfast_axis = ",".join(f"{v}" for v in fast_axis)
-        sslow_axis = ",".join(f"{v}" for v in slow_axis)
-        sadc_ports = ",".join(str(ch) for ch in adcPorts)
-
         dev = self.selectedDevice(c)
         retrace_flag = "1.0" if retrace else "0.0"
         snake_flag = "1.0" if snake else "0.0"
@@ -627,11 +619,11 @@ class DAC_ADCServer(DeviceServer):
             f"{adc_interval}",
             retrace_flag,
             snake_flag,
-            sdac_ports,
-            sstart_point,
-            sfast_axis,
-            sslow_axis,
-            sadc_ports,
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in start_point],
+            *[str(v) for v in fast_axis],
+            *[str(v) for v in slow_axis],
+            *[str(ch) for ch in adcPorts],
         ]
         yield dev.write(",".join(command_parts) + "\r\n")
         channels = []
@@ -796,12 +788,6 @@ class DAC_ADCServer(DeviceServer):
         dac_interval = float(dacInterval_us)
         dac_settling = float(dacSettlingTime_us)
 
-        sdac_ports = ",".join(str(ch) for ch in dacPorts)
-        sstart_point = ",".join(f"{v}" for v in start_point)
-        sfast_axis = ",".join(f"{v}" for v in fast_axis)
-        sslow_axis = ",".join(f"{v}" for v in slow_axis)
-        sadc_ports = ",".join(str(ch) for ch in adcPorts)
-        
         dev = self.selectedDevice(c)
         retrace_flag = "1.0" if retrace else "0.0"
         snake_flag = "1.0" if snake else "0.0"
@@ -816,11 +802,11 @@ class DAC_ADCServer(DeviceServer):
             retrace_flag,
             snake_flag,
             str(int(numAdcAverages)),
-            sdac_ports,
-            sstart_point,
-            sfast_axis,
-            sslow_axis,
-            sadc_ports,
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in start_point],
+            *[str(v) for v in fast_axis],
+            *[str(v) for v in slow_axis],
+            *[str(ch) for ch in adcPorts],
         ]
         yield dev.write(",".join(command_parts) + "\r\n")
         channels = []
@@ -953,21 +939,25 @@ class DAC_ADCServer(DeviceServer):
         """
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacconfig = ""
-        sadcconfig = ""
-
-        for x in range(dacN):
-            sdacconfig += f"{dacPorts[x]},{ivoltages_1[x]},{fvoltages_1[x]},{ivoltages_2[x]},{fvoltages_2[x]},"
-
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcconfig += f"{adcPorts[x]},"
-        
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"BOXCAR_BUFFER_RAMP,{dacN},{adcN},{dacsteps},{numAdcMeasuresPerDacStep},{numAdcAverages},{numAdcConversionSkips},{adcConversionTime_us},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "BOXCAR_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(dacsteps),
+            str(numAdcMeasuresPerDacStep),
+            str(numAdcAverages),
+            str(numAdcConversionSkips),
+            str(adcConversionTime_us),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages_1],
+            *[str(v) for v in fvoltages_1],
+            *[str(v) for v in ivoltages_2],
+            *[str(v) for v in fvoltages_2],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\r\n")
         
         channels = []
         data = b''
@@ -1126,18 +1116,16 @@ class DAC_ADCServer(DeviceServer):
         This function currently requires that all the ADCs being called have the same conversion time
         """
         adcN = len(adcPorts)
-        sadcPorts = ""
-        sadcconfig = ""
-        
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
         
         dev = self.selectedDevice(c)
-        
-        yield dev.write(f"TIME_SERIES_ADC_READ, {adcN}, {sadcconfig}, {convtime}, {totalTime}\r\n")
+        command_parts = [
+            "TIME_SERIES_ADC_READ",
+            str(adcN),
+            *[str(ch) for ch in adcPorts],
+            str(convtime),
+            str(totalTime),
+        ]
+        yield dev.write(",".join(command_parts) + "\r\n")
         self.sigSpectrumStarted([adcPorts, totalTime])
         
         channels = []
@@ -1205,31 +1193,21 @@ class DAC_ADCServer(DeviceServer):
 
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacPorts = ""
-        sadcPorts = ""
-        sivoltages = ""
-        sfvoltages = ""
-        sdacconfig = ""
-        sadcconfig = ""
-
-        for x in range(dacN):
-            sdacPorts = sdacPorts + str(dacPorts[x])
-            sivoltages = sivoltages + str(ivoltages[x]) + ","
-            sfvoltages = sfvoltages + str(fvoltages[x]) + ","
-            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
-
-        sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"TIME_SERIES_BUFFER_RAMP,{dacN},{adcN},{steps},{dacPeriod_us},{adcPeriod_us},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "TIME_SERIES_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(steps),
+            str(dacPeriod_us),
+            str(adcPeriod_us),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages],
+            *[str(v) for v in fvoltages],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\r\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacPeriod_us), str(adcPeriod_us)])
 
         channels = []

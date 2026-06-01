@@ -71,6 +71,12 @@ class AgilentDMMServer(GPIBManagedServer):
         dev = self.selectedDevice(c)
         yield dev.write('CONF:VOLT:DC {}, {}'.format(vRange, resolution))
 
+    @setting(15, nplc='i')
+    def configure_nplc(self, c, nplc=1):
+        """Configure the integration time in power line cycles (NPLC)."""
+        dev = self.selectedDevice(c)
+        yield dev.write('VOLT:DC:NPLC {}'.format(nplc))
+
     # Read ---------------------------------------------------------------------
     @setting(14, returns='v[]')
     def read_voltage(self, c):
