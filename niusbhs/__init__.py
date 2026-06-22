@@ -566,7 +566,7 @@ def _env_flag(name: str) -> bool:
 
 
 def _transfer_timeout_ms(timeout_ms: int) -> int:
-    return timeout_msecs(timeout_ms * 1000) or 0
+    return int(timeout_msecs(int(timeout_ms) * 1000) or 0)
 
 
 __all__ = [

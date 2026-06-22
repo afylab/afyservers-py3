@@ -15,6 +15,8 @@ from niusbhs.protocol import (
     parse_ibrd_readback,
     parse_reg_write_status_block,
     parse_status_block,
+    timeout_code,
+    timeout_msecs,
 )
 
 
@@ -49,6 +51,11 @@ class ProtocolTests(unittest.TestCase):
     def test_parse_status_block_count_twos_complement(self):
         status = parse_status_block(status_bytes(0x38, count=5))
         self.assertEqual(status, StatusBlock(id=0x38, ibsta=0x0120, error_code=0, count=5))
+
+    def test_float_timeouts_are_normalized_for_libusb(self):
+        self.assertEqual(timeout_code(1_000_000.0), 0xFB)
+        self.assertIsInstance(timeout_msecs(1_000_000.0), int)
+        self.assertEqual(timeout_msecs(1_000_000.0), 4000)
 
     def test_parse_register_write_status(self):
         raw = status_bytes(0x09, count=0) + bytes((26, 0, 0, 0)) + bytes((0x04, 0, 0, 0))

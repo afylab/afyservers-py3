@@ -64,6 +64,7 @@ def msa(addr: int) -> int:
 
 
 def timeout_code(usec: int) -> int:
+    usec = int(usec)
     if usec == 0:
         return 0xF0
     if usec <= 10:
@@ -104,6 +105,7 @@ def timeout_code(usec: int) -> int:
 
 
 def timeout_msecs(usec: int) -> int | None:
+    usec = int(usec)
     if usec == 0:
         return None
     return 2000 + usec // 500
