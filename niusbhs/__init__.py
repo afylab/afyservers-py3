@@ -517,9 +517,10 @@ class ResourceManager:
     def list_resources(self, query: str | None = None) -> tuple[str, ...]:
         del query
         addrs = self._resources
-        if not addrs and _env_flag("NIUSBHS_SCAN"):
+        if not addrs and not _env_flag("NIUSBHS_NO_SCAN"):
             self._bus.open()
-            addrs = self._bus.scan(idn_query=_env_flag("NIUSBHS_SCAN_IDN"))
+            addrs = self._bus.scan(idn_query=not _env_flag("NIUSBHS_ADDRESS_ONLY_SCAN"))
+            self._resources = addrs
         return tuple(f"GPIB0::{pad}::INSTR" for pad in addrs)
 
     def scan(self, addresses: Iterable[int] | None = None) -> tuple[int, ...]:
