@@ -214,7 +214,7 @@ class DAC_ADCServer(DeviceServer):
             returnValue("Error: invalid voltage. It must be between -10 and 10.")
             return
         dev=self.selectedDevice(c)
-        yield dev.write("SET,%i,%f\r\n"%(port,voltage))
+        yield dev.write("SET,%i,%f\n"%(port,voltage))
         ans = yield dev.read()
         voltage=ans.lower().partition(' to ')[2][:-1]
         self.sigOutputSet([str(port),voltage])
@@ -230,7 +230,7 @@ class DAC_ADCServer(DeviceServer):
         if not (port in range(8)):
             returnValue("Error: invalid port number.")
             return
-        yield dev.write("GET_ADC,%i\r\n"%port)
+        yield dev.write("GET_ADC,%i\n"%port)
         ans = yield dev.read()
         self.sigInputRead([str(port),str(ans)])
         returnValue(float(ans))
@@ -243,7 +243,7 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         dev.timeout(Value(steps*delay + 5000000,'us')) # 5 more seconds than however long the ramp should take
-        yield dev.write("RAMP1,%i,%f,%f,%i,%i\r\n"%(port,ivoltage,fvoltage,steps,delay))
+        yield dev.write("RAMP1,%i,%f,%f,%i,%i\n"%(port,ivoltage,fvoltage,steps,delay))
         self.sigRamp1Started([str(port),str(ivoltage),str(fvoltage),str(steps),str(delay)])
         ans = yield dev.read()
         dev.timeout(TIMEOUT) # set timeout back to default
@@ -257,7 +257,7 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         dev.timeout(Value(steps*delay + 5000000,'us')) # 5 more seconds than however long the ramp should take
-        yield dev.write("RAMP2,%i,%i,%f,%f,%f,%f,%i,%i\r\n"%(port1,port2,ivoltage1,ivoltage2,fvoltage1,fvoltage2,steps,delay))
+        yield dev.write("RAMP2,%i,%i,%f,%f,%f,%f,%i,%i\n"%(port1,port2,ivoltage1,ivoltage2,fvoltage1,fvoltage2,steps,delay))
         self.sigRamp2Started([str(port1),str(port2),str(ivoltage1),str(ivoltage2),str(fvoltage1),str(fvoltage2),str(steps),str(delay)])
         ans = yield dev.read()
         dev.timeout(TIMEOUT) # set timeout back to default
@@ -332,7 +332,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in fvoltages],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
@@ -355,7 +355,7 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -391,7 +391,7 @@ class DAC_ADCServer(DeviceServer):
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
@@ -432,7 +432,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(ch) for ch in dacPorts],
             *[str(v) for channel in voltageLists for v in channel],
         ]
-        command = ",".join(command_parts) + "\r\n"
+        command = ",".join(command_parts) + "\n"
         print(command)
         yield dev.write(command)
         
@@ -479,7 +479,7 @@ class DAC_ADCServer(DeviceServer):
         ]
 
         dev = self.selectedDevice(c)
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
 
         channels = [[] for _ in range(adcN)]
         data = b''
@@ -532,7 +532,7 @@ class DAC_ADCServer(DeviceServer):
                         batch_count += 1
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -545,7 +545,7 @@ class DAC_ADCServer(DeviceServer):
             print('AWG stopped by user')
 
         # Send STOP command to firmware
-        yield dev.write("STOP\r\n")
+        yield dev.write("STOP\n")
         yield self.sleep(0.1)
 
         # Drain any remaining bytes
@@ -625,7 +625,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in slow_axis],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         channels = []
         data = b''
         dev.setramping(True)
@@ -703,7 +703,7 @@ class DAC_ADCServer(DeviceServer):
                     current_line += 1
                 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -728,7 +728,7 @@ class DAC_ADCServer(DeviceServer):
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
@@ -808,7 +808,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in slow_axis],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         channels = []
         data = b''
         dev.setramping(True)
@@ -885,7 +885,7 @@ class DAC_ADCServer(DeviceServer):
                     current_line += 1
                 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -910,7 +910,7 @@ class DAC_ADCServer(DeviceServer):
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
@@ -957,7 +957,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in fvoltages_2],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         
         channels = []
         data = b''
@@ -977,7 +977,7 @@ class DAC_ADCServer(DeviceServer):
                         data = data + tmp
                         nbytes = nbytes + bytestoread
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -1093,19 +1093,19 @@ class DAC_ADCServer(DeviceServer):
     @setting(133)
     def reset_adc(self,c):
         dev = self.selectedDevice(c)
-        yield dev.write("RESET\r\n")
+        yield dev.write("RESET\n")
     
     @setting(220)
     def hard_reset_adc(self,c):
         dev = self.selectedDevice(c)
-        yield dev.write("HARD_RESET\r\n")
+        yield dev.write("HARD_RESET\n")
         ans = yield dev.read()
         returnValue(ans)
         
     @setting(135, channel='i', returns='v[]')
     def get_conversion_time(self,c,channel):
         dev = self.selectedDevice(c)
-        yield dev.write(f"GET_CONVERT_TIME,{channel}\r\n")
+        yield dev.write(f"GET_CONVERT_TIME,{channel}\n")
         ans = yield dev.read()
         returnValue(float(ans))
         
@@ -1125,7 +1125,7 @@ class DAC_ADCServer(DeviceServer):
             str(convtime),
             str(totalTime),
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigSpectrumStarted([adcPorts, totalTime])
         
         channels = []
@@ -1152,7 +1152,7 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -1207,7 +1207,7 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in fvoltages],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\r\n")
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacPeriod_us), str(adcPeriod_us)])
 
         channels = []
@@ -1231,7 +1231,7 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
@@ -1273,7 +1273,7 @@ class DAC_ADCServer(DeviceServer):
         if not (82 <= time <= 2686):
             returnValue("Error: invalid conversion time. Must adhere to (82 <= t <= 2686) (t is in microseconds)")
         dev=self.selectedDevice(c)
-        yield dev.write("CONVERT_TIME,%i,%f\r\n"%(channel,time))
+        yield dev.write("CONVERT_TIME,%i,%f\n"%(channel,time))
         ans = yield dev.read()
         self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
@@ -1289,7 +1289,7 @@ class DAC_ADCServer(DeviceServer):
         if not (3 <= fw <= 127):
             returnValue("Error: invalid conversion time. Must adhere to (3 <= fw <= 127)")
         dev=self.selectedDevice(c)
-        yield dev.write("CONVERT_TIME_FW,%i,%f\r\n"%(channel,fw))
+        yield dev.write("CONVERT_TIME_FW,%i,%f\n"%(channel,fw))
         ans = yield dev.read()
         # self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
@@ -1301,7 +1301,7 @@ class DAC_ADCServer(DeviceServer):
         IDN? returns the string.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("*IDN?\r\n")
+        yield dev.write("*IDN?\n")
         time.sleep(1)
         ans = yield dev.read()
         returnValue(ans)
@@ -1312,7 +1312,7 @@ class DAC_ADCServer(DeviceServer):
         RDY? returns the string "READY" when the DAC-ADC is ready for a new operation.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("*RDY?\r\n")
+        yield dev.write("*RDY?\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1332,7 +1332,7 @@ class DAC_ADCServer(DeviceServer):
         Discards all elements from input buffer.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("STOP\r\n")
+        yield dev.write("STOP\n")
         dev.setramping(False)
 
         #Let ramps finish up
@@ -1350,40 +1350,51 @@ class DAC_ADCServer(DeviceServer):
         Connect each DAC to each ADC channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("DAC_CH_CAL\r\n")
+        yield dev.write("DAC_CH_CAL\n")
         ans = yield dev.read()
         returnValue(ans)
 
     @setting(115,returns='s')
-    def adc_zero_sc_calibration(self,c):
+    def calibrate_all_adc_channels_zero_scale(self,c):
         """
-        Calibrates each DAC channel.
-        Connect each DAC to each ADC channel.
+        Calibrates ADC Zero scale for all channels.
+        Connect a zero scale voltage to all channels.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_ZERO_SC_CAL\r\n")
+        yield dev.write("CALIBRATE_ALL_ADC_CHANNELS_ZERO_SCALE\n")
         ans = yield dev.read()
         returnValue(ans)
 
-    @setting(116,returns='s')
-    def adc_ch_zero_sc_calibration(self,c):
+    @setting(116, channel='i', returns='s')
+    def calibrate_adc_channel_zero_scale(self,c, channel):
         """
-        Calibrates ADC Zero scale for each channel.
-        Connect a zero scale voltage to each channel.
+        Calibrates ADC Zero scale for specified channel.
+        Connect a zero scale voltage to specified channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_CH_ZERO_SC_CAL\r\n")
+        yield dev.write(f"CALIBRATE_ADC_CHANNEL_ZERO_SCALE,{channel}\n")
         ans = yield dev.read()
         returnValue(ans)
 
-    @setting(117,returns='s')
-    def adc_ch_full_sc_calibration(self,c):
+    @setting(117, channel='i', returns='s')
+    def calibrate_adc_channel_full_scale(self,c, channel):
         """
-        Calibrates ADC Full scale for each channel.
-        Connect a full scale voltage to each channel.
+        Calibrates ADC Full scale for specified channel.
+        Connect a full scale voltage to specified channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_CH_FULL_SC_CAL\r\n")
+        yield dev.write(f"CALIBRATE_ADC_CHANNEL_FULL_SCALE,{channel}\n")
+        ans = yield dev.read()
+        returnValue(ans)
+    
+    @setting(140, returns='s')
+    def calibrate_all_adc_channel_full_scale(self,c):
+        """
+        Calibrates ADC Full scale for specified channel.
+        Connect a full scale voltage to specified channel.
+        """
+        dev=self.selectedDevice(c)
+        yield dev.write(f"CALIBRATE_ALL_ADC_CHANNELS_FULL_SCALE\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1393,7 +1404,7 @@ class DAC_ADCServer(DeviceServer):
         Initializes DACs
         """
         dev=self.selectedDevice(c)
-        yield dev.write("INITIALIZE\r\n")
+        yield dev.write("INITIALIZE\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1403,7 +1414,7 @@ class DAC_ADCServer(DeviceServer):
         Sets delay unit. 0 = microseconds(default) 1 = miliseconds
         """
         dev=self.selectedDevice(c)
-        yield dev.write("SET_DUNIT,%i\r\n"%(unit))
+        yield dev.write("SET_DUNIT,%i\n"%(unit))
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1413,7 +1424,7 @@ class DAC_ADCServer(DeviceServer):
         Sets the dac full scale.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("FULL_SCALE,%f\r\n"%(voltage))
+        yield dev.write("FULL_SCALE,%f\n"%(voltage))
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1423,7 +1434,7 @@ class DAC_ADCServer(DeviceServer):
         Sets the upper voltage limit for a specific DAC channel.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("SET_UPPER_LIMIT,%i,%f\r\n" % (int(channel), float(limit)))
+        yield dev.write("SET_UPPER_LIMIT,%i,%f\n" % (int(channel), float(limit)))
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1433,7 +1444,7 @@ class DAC_ADCServer(DeviceServer):
         Sets the lower voltage limit for a specific DAC channel.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("SET_LOWER_LIMIT,%i,%f\r\n" % (int(channel), float(limit)))
+        yield dev.write("SET_LOWER_LIMIT,%i,%f\n" % (int(channel), float(limit)))
         ans = yield dev.read()
         returnValue(ans)
     
@@ -1443,7 +1454,7 @@ class DAC_ADCServer(DeviceServer):
         Gets the lower voltage limit for a specific DAC channel.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("GET_LOWER_LIMIT,%i\r\n" % (int(channel)))
+        yield dev.write("GET_LOWER_LIMIT,%i\n" % (int(channel)))
         ans = yield dev.read()
         returnValue(ans)
     
@@ -1453,7 +1464,7 @@ class DAC_ADCServer(DeviceServer):
         Gets the upper voltage limit for a specific DAC channel.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("GET_UPPER_LIMIT,%i\r\n" % (int(channel)))
+        yield dev.write("GET_UPPER_LIMIT,%i\n" % (int(channel)))
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1463,7 +1474,7 @@ class DAC_ADCServer(DeviceServer):
         Set the offset and gain for all DAC channels.
         """
         dev=self.selectedDevice(c)
-        message = f"SET_OSG,{channel},{offset},{gain}\r\n"
+        message = f"SET_OSG,{channel},{offset},{gain}\n"
         yield dev.write(message)
         ans = yield dev.read()
 
@@ -1475,7 +1486,7 @@ class DAC_ADCServer(DeviceServer):
         Print the current offset and gain values for all DAC channels.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("INQUIRY_OSG\r\n")
+        yield dev.write("INQUIRY_OSG\n")
         ans = [0]*32
         for i in range(32):
             ans[i] = yield dev.read()
@@ -1489,7 +1500,7 @@ class DAC_ADCServer(DeviceServer):
         Returns the serial number of the box.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("SERIAL_NUMBER\r\n")
+        yield dev.write("SERIAL_NUMBER\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1505,7 +1516,7 @@ class DAC_ADCServer(DeviceServer):
             returnValue("Error: invalid code. Must be between 0 and 1048576.")
             return
         dev=self.selectedDevice(c)
-        yield dev.write("SET_DAC_CODE,%i,%i\r\n"%(channel,code))
+        yield dev.write("SET_DAC_CODE,%i,%i\n"%(channel,code))
         ans = yield dev.read()
         code = ans.lower().partition(' to ')[2][:-1]
         self.sigOutputSet([str(channel),code])
@@ -1519,7 +1530,7 @@ class DAC_ADCServer(DeviceServer):
         if not (channel in range(16)):
             returnValue("Error: invalid port number.")
         dev = self.selectedDevice(c)
-        yield dev.write("GET_DAC,%i\r\n"%(channel))
+        yield dev.write("GET_DAC,%i\n"%(channel))
         ans = yield dev.read()
         returnValue(float(ans))
 
@@ -1537,7 +1548,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)
-        yield dev.write(f"{phrase}\r\n")
+        yield dev.write(f"{phrase}\n")
         ret = yield dev.read()
         returnValue(ret)
 
@@ -1550,7 +1561,7 @@ class DAC_ADCServer(DeviceServer):
     def send_read_requests(self,c):
         dev = self.selectedDevice(c)
         for port in [0,1,2,3]:
-            yield dev.write("GET_ADC,%i\r\n"%port)
+            yield dev.write("GET_ADC,%i\n"%port)
             ans = yield dev.read()
             self.sigInputRead([str(port),str(ans)])
 
