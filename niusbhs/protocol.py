@@ -214,6 +214,16 @@ def build_init_writes(
     return tuple(writes)
 
 
+def build_remote_enable_writes(enable: bool = True) -> tuple[Register, ...]:
+    return (
+        Register(
+            c.NIUSB_SUBDEV_TNT4882,
+            nec7210_to_tnt4882_offset(c.AUXMR),
+            c.AUX_SREN if enable else c.AUX_CREN,
+        ),
+    )
+
+
 def _complement_minus_one(length: int) -> int:
     if length < 1 or length > 0x10000:
         raise ValueError("length must be in 1..65536")

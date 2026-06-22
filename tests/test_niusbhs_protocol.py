@@ -9,6 +9,7 @@ from niusbhs.protocol import (
     build_init_writes,
     build_read,
     build_register_write,
+    build_remote_enable_writes,
     build_write,
     mla,
     mta,
@@ -47,6 +48,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(packet[:8], bytes.fromhex("0a 00 00 fb 00 fc 00 00"))
         self.assertEqual(packet[8:17], bytes((0x09, 2, 0, 1, 10, 0x51, 1, 10, 0x55)))
         self.assertEqual(packet[-4:], bytes((0x04, 0, 0, 0)))
+
+    def test_remote_enable_register_write_matches_ni_usb_remote_enable(self):
+        packet = build_register_write(build_remote_enable_writes(True))
+        self.assertEqual(packet, bytes.fromhex("09 01 00 01 0a 1f 00 00 04 00 00 00"))
 
     def test_parse_status_block_count_twos_complement(self):
         status = parse_status_block(status_bytes(0x38, count=5))

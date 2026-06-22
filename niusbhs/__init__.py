@@ -20,6 +20,7 @@ from .protocol import (
     build_interface_clear,
     build_read,
     build_register_write,
+    build_remote_enable_writes,
     build_take_control,
     build_write,
     mla,
@@ -116,6 +117,7 @@ class NIUSBHS:
             self._hs_plus_extra_init()
         self.init()
         self.interface_clear()
+        self.remote_enable(True)
         return self
 
     def close(self) -> None:
@@ -147,6 +149,9 @@ class NIUSBHS:
         status = parse_status_block(raw)
         self._raise_for_status("interface clear", status, raw)
         return status
+
+    def remote_enable(self, enable: bool = True) -> StatusBlock:
+        return self._register_write(build_remote_enable_writes(enable))
 
     def write_to(self, pad: int, data: bytes | str, *, send_eoi: bool = True) -> int:
         payload = data.encode() if isinstance(data, str) else bytes(data)
