@@ -221,23 +221,32 @@ if __name__ == "__main__":
             continue
         print(f"CALIBRATING CHANNEL {channel}...")
         calibrate_dac_channel(channel)
-        user_input = input(f"CONNECT DAC CHANNEL {channel} TO ADC CHANNEL {channel}, then press Enter to continue calibration, or type 'skip' to skip this step: ")
-        if user_input.strip().lower() == 'skip':
-            print(f"SKIPPING ADC CALIBRATION FOR CHANNEL {channel}.")
+
+    # Calibrate all ADC channels using DAC channel 0 as the voltage source.
+    # Connect DAC channel 0 to each ADC channel in turn when prompted.
+    input("\nAll DAC channels calibrated. Connect DAC channel 0 to ADC channel 0, then press Enter to begin ADC calibration: ")
+
+    for channel in selected_channels:
+        if channel in skipped_channels:
+            print(f"SKIPPING ADC CHANNEL {channel}.")
             continue
-        
-        da.set_conversionTime(channel,2800)
-        da.set_voltage(channel,0)
+        if channel != 0:
+            input(f"Move the cable from ADC channel {channel - 1} to ADC channel {channel}, then press Enter: ")
+
+        da.set_conversionTime(channel, 2600)
+        da.set_voltage(0, 0)
         sleep(0.1)
         da.calibrate_adc_channel_zero_scale(channel)
         sleep(0.1)
-        da.set_voltage(channel,10)
+        da.set_voltage(0, 10)
         sleep(0.1)
-        da.calibrate_adc_channel_zero_scale(channel)
+        da.calibrate_adc_channel_full_scale(channel)
         sleep(0.1)
-        adc_reading_10v = da.read_voltage(channel)
-        sleep(0.1)
-        da.set_voltage(channel,0)
+        da.set_voltage(0, 0)
         sleep(0.1)
         adc_reading_0v = da.read_voltage(channel)
+        sleep(0.1)
+        da.set_voltage(0, 10)
+        sleep(0.1)
+        adc_reading_10v = da.read_voltage(channel)
         print(f"ADC CHANNEL {channel} CALIBRATED. 0V reads {adc_reading_0v} and 10V reads {adc_reading_10v}.")
