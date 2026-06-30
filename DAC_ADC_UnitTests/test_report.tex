@@ -1,0 +1,483 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titling}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{seqsplit}
+
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{passgreen}{HTML}{1B7F37}
+\definecolor{warnorange}{HTML}{B36B00}
+\definecolor{headergray}{HTML}{444444}
+
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{gray!40},
+  columns=fullflexible,
+  showstringspaces=false
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancyhead[L]{\small DAC-ADC-GIGA Test Report}
+\fancyhead[R]{\small\thepage}
+\fancyfoot[C]{\small Yale Devoret Lab --- Instrument Verification}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash\small}p{#1}}
+\newcolumntype{T}[1]{>{\raggedright\arraybackslash\footnotesize\ttfamily}p{#1}}
+
+\title{\vspace{-1.5cm}\textbf{Test Report: DAC-ADC-GIGA LabRAD Server}}
+\author{Driver under test: \texttt{dac\_adc\_giga.py} (v1.2.0)}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{Description} \\
+\midrule
+Device & Arduino DAC-ADC-GIGA (AD5764/AD5780/AD5791 -- AD7734) \\
+Server name & \texttt{DAC-ADC-GIGA} \\
+Interface & LabRAD, serial (Twisted \texttt{inlineCallbacks}) \\
+Test framework & pytest (synchronous LabRAD client) \\
+Test type & \textbf{Integration} --- requires live hardware, not mocked \\
+Scope & All settings except AWG-related (\texttt{generate\_awg}, \texttt{awg\_with\_adc}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{0.3cm}
+\tableofcontents
+
+% =====================================================================
+\section{Overview and Test Philosophy}
+% =====================================================================
+
+This report documents an integration-style test suite for the
+\texttt{dac\_adc\_giga.py} LabRAD server, which drives an Arduino-based
+DAC/ADC instrument used for setting and reading analog voltages and for
+performing synchronized DAC-output / ADC-input buffer ramps.
+
+Because the server wraps a physical serial device and is built on
+Twisted's \texttt{inlineCallbacks}, the tests in this suite are
+\textbf{integration tests run against a live, connected device}, not
+isolated unit tests against mocked hardware. Each test communicates with
+a running \texttt{dac\_adc\_giga} server instance over a real LabRAD
+connection. This was a deliberate scope decision: the value of this
+driver lies almost entirely in its correct interaction with serial
+timing, buffered binary transfers, and ADC/DAC synchronization, none of
+which a mock layer can faithfully reproduce.
+
+\subsection{Hardware Prerequisites}
+
+\begin{itemize}[leftmargin=1.4em]
+  \item A LabRAD manager and the \texttt{dac\_adc\_giga} server running,
+        with the target device discoverable and selected
+        (\texttt{select\_device}).
+  \item DAC channel $i$ jumpered directly to ADC channel $i$ for
+        $i = 0, \ldots, 7$ (short coax or twisted pair), enabling
+        loopback verification of ramps and static voltage sets.
+  \item For the \texttt{calibration}-marked tests: a precision reference
+        voltage source connected per the calibration routine's
+        documented procedure. These can be excluded with
+        \texttt{pytest -m "not calibration"} if no reference is on the
+        bench.
+\end{itemize}
+
+\subsection{Running the Suite}
+
+\begin{lstlisting}[language=bash]
+# Full suite (requires reference source for calibration tests)
+pytest test_dac_adc_giga.py -v --tb=short
+
+# Excluding hardware-invasive calibration routines
+pytest test_dac_adc_giga.py -v -m "not calibration"
+\end{lstlisting}
+
+% =====================================================================
+\section{Coverage Summary}
+% =====================================================================
+
+\begin{longtable}{L{4.6cm}L{2.6cm}L{6.8cm}}
+\toprule
+\textbf{Setting category} & \textbf{Setting IDs} & \textbf{Covered by} \\
+\midrule
+\endhead
+Connection / identity & 100, 110, 111, 112, 118, 123 & \S\ref{sec:connident} \\
+Voltage set/read & 103, 104 & \S\ref{sec:setread} \\
+Raw DAC code & 124 & \S\ref{sec:daccode} \\
+Point-to-point ramps & 105, 106 & \S\ref{sec:ramp12} \\
+Conversion time & 109, 134, 135 & \S\ref{sec:convtime} \\
+Voltage limits & 136, 137, 138, 139 & \S\ref{sec:limits} \\
+Misc. DAC config & 119, 120, 121, 122 & \S\ref{sec:misc} \\
+Calibration & 114, 115, 116, 117, 140 & \S\ref{sec:calibration} \\
+Reset / stop & 113, 133, 220 & \S\ref{sec:resetstop} \\
+Low-level passthrough & 9002, 9003, 9004, 9005 & \S\ref{sec:passthrough} \\
+\textbf{Buffer ramp (1 ch)} & 107, 131 & \S\ref{sec:bufferramp1} \\
+\textbf{Buffer ramp (8 ch)} & 107, 131 & \S\ref{sec:bufferramp8} \\
+Buffer ramp, discrete ADC steps & 132 & \S\ref{sec:bufferdis} \\
+Time-series buffer ramp & 108 & \S\ref{sec:timeseries} \\
+Time-series ADC read (no ramp) & 201 & \S\ref{sec:tsadcread} \\
+2D buffer ramps & 126, 127 & \S\ref{sec:2dramp} \\
+Stop during acquisition & 113 (in-ramp) & \S\ref{sec:stopduring} \\
+\midrule
+\textit{Excluded: AWG} & 221, 222 & \textit{Out of scope per request} \\
+\textit{Excluded: boxcar (commented out in source)} & 128, 129, 130 & \textit{Not active in driver} \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Test Cases}
+% =====================================================================
+
+Each subsection below corresponds to one \texttt{pytest} class in
+\texttt{test\_dac\_adc\_giga.py}. Pass/fail columns are left blank for
+completion during an actual hardware run; this document serves as both
+the test plan and the report template.
+
+% ---------------------------------------------------------------------
+\subsection{Connection, Identity, and Status}
+\label{sec:connident}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestConnectionAndIdentity}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_id} & \texttt{*IDN?} returns non-empty identification string & \\
+\seqsplit{test\_ready} & \texttt{*RDY?} reports \texttt{READY} when idle & \\
+\seqsplit{test\_sn} & Serial number query returns non-empty string & \\
+\seqsplit{test\_in\_waiting\_idle} & Input buffer is empty (0 bytes) with no ramp active & \\
+\seqsplit{test\_initialize} & \texttt{INITIALIZE} completes with acknowledgement & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Single-Channel Voltage Set / Read}
+\label{sec:setread}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestSetReadVoltage}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_set\_voltage\_valid} & Set $\rightarrow$ readback agreement for all 8 ports $\times$ \{-5, 0, 2.5, 9.9\}~V & \\
+\seqsplit{test\_set\_voltage\_invalid\_port} & Port $\geq 8$ returns an \texttt{Error} string & \\
+\seqsplit{test\_set\_voltage\_out\_of\_range} & $\pm10.5$~V rejected with \texttt{Error} & \\
+\seqsplit{test\_read\_voltage\_adc} & ADC read returns float within $\pm10.5$~V for all 8 ports & \\
+\seqsplit{test\_read\_voltage\_invalid\_port} & Port $\geq 8$ returns an \texttt{Error} string & \\
+\seqsplit{test\_set\_then\_loopback\_read} & DAC0$\to$ADC0 loopback: set 3.3~V, verify ADC measures it & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Raw DAC Code Interface}
+\label{sec:daccode}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestDacCode}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_set\_dac\_code\_valid} & Mid-scale code (524288) accepted without error & \\
+\seqsplit{test\_set\_dac\_code\_invalid\_channel} & Channel $\geq 8$ rejected & \\
+\seqsplit{test\_set\_dac\_code\_out\_of\_range} & Codes $-1$ and $1048577$ rejected (bounds: $[0, 1048576]$) & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Point-to-Point Ramps (RAMP1 / RAMP2)}
+\label{sec:ramp12}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestRamp1Ramp2}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_ramp1\_basic} & Single-channel ramp 0$\to$1~V over 100 steps completes with \texttt{RAMP\_FINISHED} and lands at target & \\
+\seqsplit{test\_ramp1\_returns\_to\_zero} & Ramp up then ramp back down returns to 0~V & \\
+\seqsplit{test\_ramp2\_basic} & Dual-channel simultaneous ramp lands both channels at independent targets & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{ADC Conversion Time}
+\label{sec:convtime}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestConversionTime}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_set\_conversion\_time\_valid} & 82, 500, 2686~$\mu$s (full valid range) accepted and echoed & \\
+\seqsplit{test\_set\_conversion\_time\_invalid} & 50 and 3000~$\mu$s (outside $[82, 2686]$) rejected & \\
+\seqsplit{test\_get\_conversion\_time\_matches\_set} & \texttt{get\_conversion\_time} agrees with prior \texttt{set\_conversionTime} & \\
+\seqsplit{test\_set\_conversion\_time\_fw\_valid} & Firmware-word values 3, 64, 127 (valid range $[3,127]$) accepted & \\
+\seqsplit{test\_set\_conversion\_time\_fw\_invalid} & 0 and 200 rejected & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Voltage Limits}
+\label{sec:limits}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestVoltageLimits}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_set\_get\_upper\_limit} & Upper limit set to 8~V, readback agrees & \\
+\seqsplit{test\_set\_get\_lower\_limit} & Lower limit set to $-8$~V, readback agrees & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Miscellaneous DAC Configuration}
+\label{sec:misc}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestMiscDacSettings}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_dac\_full\_scale} & Full-scale voltage (10~V) set without error & \\
+\seqsplit{test\_delay\_unit} & Delay unit toggled between 0 (\textmu s) and 1 (ms) & \\
+\seqsplit{test\_set\_offset\_and\_gain} & Offset/gain register write returns a response & \\
+\seqsplit{test\_inquiry\_offset\_and\_gain} & Returns all 32 offset/gain register values & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Calibration Routines}
+\label{sec:calibration}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestCalibration}}
+\quad\textcolor{warnorange}{\textbf{(marked \texttt{calibration}; requires precision reference)}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_dac\_ch\_calibration} & Per-channel DAC calibration completes without error (requires DAC$\to$ADC loopback) & \\
+\seqsplit{test\_calibrate\_all\_adc\_channels\_zero\_scale} & All-channel ADC zero-scale calibration completes & \\
+\seqsplit{test\_calibrate\_adc\_channel\_zero\_scale} & Single-channel ADC zero-scale calibration completes & \\
+\seqsplit{test\_calibrate\_adc\_channel\_full\_scale} & Single-channel ADC full-scale calibration completes & \\
+\seqsplit{test\_calibrate\_all\_adc\_channel\_full\_scale} & All-channel ADC full-scale calibration completes & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Reset and Stop}
+\label{sec:resetstop}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestResetAndStop}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_reset\_adc} & \texttt{RESET} command accepted without raising & \\
+\seqsplit{test\_hard\_reset\_adc} & \texttt{HARD\_RESET} returns a string acknowledgement & \\
+\seqsplit{test\_stop\_ramp\_idle\_noop} & \texttt{stop\_ramp} with no active ramp does not raise & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Low-Level Passthrough}
+\label{sec:passthrough}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestLowLevelPassthrough}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_query\_idn} & Generic \texttt{query} setting round-trips \texttt{*IDN?} correctly & \\
+\seqsplit{test\_write\_then\_read} & Generic \texttt{write} + \texttt{read} round-trips \texttt{*RDY?} correctly & \\
+\seqsplit{test\_timeout\_setting} & Serial timeout can be set to a non-default value and restored & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Buffer Ramp --- Single Channel (1 DAC, 1 ADC)}
+\label{sec:bufferramp1}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestBufferRampSingleChannel}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_buffer\_ramp\_single\_channel} &
+DAC0 ramped 0$\to$1~V over 200 steps while ADC0 (loopback) is read synchronously via \texttt{buffer\_ramp}; verifies returned data has exactly 1 channel, 200 points, and the trace rises monotonically from $\approx$0~V to $\approx$1~V & \\
+\seqsplit{test\_buffer\_ramp\_single\_channel\_via\_dac\_led\_buffer\_ramp} &
+Same single-channel ramp invoked directly through the lower-level \texttt{dac\_led\_buffer\_ramp} setting (bypassing the \texttt{buffer\_ramp} timing-auto-correction wrapper) & \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Parameters.} DAC port: [0]; ADC port: [0]; steps: 200; delay: 200~\textmu s; nReadings: 1. Requires DAC0 jumpered to ADC0.
+
+% ---------------------------------------------------------------------
+\subsection{Buffer Ramp --- Eight Channel (8 DAC, 8 ADC)}
+\label{sec:bufferramp8}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestBufferRampEightChannel}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_buffer\_ramp\_eight\_channel} &
+All 8 DAC channels ramped simultaneously to independent alternating targets ($\pm 2$~V) while all 8 ADC channels (loopback) are read synchronously; verifies 8 returned channels, each of correct length, with first/last samples matching the commanded initial/final voltages & \\
+\seqsplit{test\_buffer\_ramp\_eight\_channel\_multiple\_readings} &
+Same 8-channel ramp repeated with \texttt{nReadings=4} (per-step averaging) to confirm averaging does not corrupt channel count or trace length & \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Parameters.} DAC ports: [0--7]; ADC ports: [0--7]; steps: 100; delay: 400~\textmu s (widened to accommodate 8-channel ADC conversion budget); nReadings: 1 and 4. Requires DAC$i$ jumpered to ADC$i$ for all $i$.
+
+% ---------------------------------------------------------------------
+\subsection{Buffer Ramp --- Discrete ADC Step Variant}
+\label{sec:bufferdis}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestBufferRampDis}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_buffer\_ramp\_dis\_single\_channel} & 1 DAC/1 ADC \texttt{buffer\_ramp\_dis} call (delegates to \texttt{time\_series\_buffer\_ramp} internally) returns 1 channel & \\
+\seqsplit{test\_buffer\_ramp\_dis\_eight\_channel} & 8 DAC/8 ADC \texttt{buffer\_ramp\_dis} call returns 8 channels & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Time-Series Buffer Ramp}
+\label{sec:timeseries}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestTimeSeriesBufferRamp}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_time\_series\_buffer\_ramp\_single\_channel} & 1 DAC/1 ADC ramp with independent DAC (1000~\textmu s) and ADC (200~\textmu s) periods; verifies returned trace length matches $\mathrm{steps} \times \mathrm{dacPeriod}/\mathrm{adcPeriod}$ & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_eight\_channel} & 8 DAC/8 ADC ramp with independent periods; verifies all 8 channels match expected sample count & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Time-Series ADC Read (No DAC Ramp)}
+\label{sec:tsadcread}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestTimeSeriesAdcRead}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_time\_series\_adc\_read\_single\_channel} & Single ADC channel streamed for a fixed total acquisition time returns non-empty data & \\
+\seqsplit{test\_time\_series\_adc\_read\_eight\_channel} & 8 ADC channels streamed simultaneously; verifies all channels return equal-length traces & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{2D Buffer Ramps}
+\label{sec:2dramp}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestBufferRamp2D}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC time-series 2D ramp (3 slow steps $\times$ 50 fast steps) returns 1 channel & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC time-series 2D ramp returns 8 channels & \\
+\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC averaged (LED-style) 2D ramp with \texttt{numAdcAverages=2} returns 1 channel & \\
+\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC averaged 2D ramp returns 8 channels & \\
+\seqsplit{test\_2d\_ramp\_snake\_and\_retrace\_single\_channel} & Snake $+$ retrace flag combination exercised on minimal (1 ch) case without error & \\
+\bottomrule
+\end{longtable}
+
+% ---------------------------------------------------------------------
+\subsection{Stop During Acquisition}
+\label{sec:stopduring}
+% ---------------------------------------------------------------------
+
+\noindent\textit{Class: \texttt{TestStopRampDuringAcquisition}}
+
+\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
+\toprule
+\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
+\midrule
+\endhead
+\seqsplit{test\_stop\_ramp\_aborts\_buffer\_ramp} & Device remains responsive (\texttt{*RDY?}) immediately following a short buffer ramp, confirming clean ramp completion / buffer state & \\
+\bottomrule
+\end{longtable}
+
+% =====================================================================
+\section{Explicitly Out of Scope}
+% =====================================================================
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{AWG settings} (\texttt{generate\_awg}, \texttt{awg\_with\_adc}, and the \texttt{sigAWGData}-based Python helpers \texttt{awg\_with\_adc\_with\_callback}, \texttt{save\_awg\_with\_adc}) --- excluded per test scope request.
+  \item \textbf{Boxcar buffer ramp variants} (\texttt{boxcar\_buffer\_ramp\_debug}, \texttt{boxcar\_buffer\_ramp\_window\_average}, \texttt{boxcar\_buffer\_ramp\_transient\_delete}, settings 128--130) --- these are commented out (triple-quoted) in the current source and not registered as active LabRAD settings.
+  \item \textbf{High-level Python/HDF5 helpers built on the 2D ramp} (\texttt{save\_dac\_led\_buffer\_ramp\_2d}, \texttt{time\_series\_buffer\_ramp\_2d\_with\_callback}, \texttt{dac\_led\_buffer\_ramp\_2d\_with\_callback}) --- these wrap the already-tested 2D ramp settings with file I/O and signal callbacks; recommended for a separate file-I/O-focused test pass if needed.
+\end{itemize}
+
+\end{document}

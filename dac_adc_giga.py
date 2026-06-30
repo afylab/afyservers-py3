@@ -43,7 +43,7 @@ from pathlib import Path
 from datetime import datetime
 
 TIMEOUT = Value(5,'s')
-BAUD    = 10000
+BAUD    = 921600
 
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
@@ -65,7 +65,7 @@ class DAC_ADCWrapper(DeviceWrapper):
         self.ramping = False
         p = self.packet()
         p.open(port)
-        p.baudrate(BAUD)
+        p.baudrate()
         p.read()  # clear out the read buffer
         p.timeout(TIMEOUT)
         print(" CONNECTED ")
@@ -1139,6 +1139,7 @@ class DAC_ADCServer(DeviceServer):
         try:
             nbytes = 0
             totalbytes = adcN * int(totalTime / sampling_time) * 4
+            print('TOTAL BYTES: '+str(totalbytes))
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -1161,6 +1162,8 @@ class DAC_ADCServer(DeviceServer):
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
+
+            print('totalbytesread: ' + str(nbytes))
 
 
             for x in range(adcN):
