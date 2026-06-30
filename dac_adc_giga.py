@@ -43,7 +43,21 @@ from pathlib import Path
 from datetime import datetime
 
 TIMEOUT = Value(5,'s')
-BAUD    = 10000
+USB_SERIAL_BAUDRATES = (
+    12000000,
+    8000000,
+    6000000,
+    4000000,
+    3000000,
+    2000000,
+    1500000,
+    1000000,
+    921600,
+    460800,
+    230400,
+    115200,
+)
+BAUD = USB_SERIAL_BAUDRATES[0]
 
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
@@ -63,17 +77,31 @@ class DAC_ADCWrapper(DeviceWrapper):
         self.ctx = server.context()
         self.port = port
         self.ramping = False
+        yield self.packet().open(port).send()
+        baudrate = yield self.set_fastest_baudrate()
         p = self.packet()
-        p.open(port)
-        p.baudrate(BAUD)
         p.read()  # clear out the read buffer
         p.timeout(TIMEOUT)
-        print(" CONNECTED ")
         yield p.send()
+        print(" CONNECTED at %d baud " % baudrate)
 
     def packet(self):
         """Create a packet in our private context."""
         return self.server.packet(context=self.ctx)
+
+    @inlineCallbacks
+    def set_fastest_baudrate(self):
+        last_error = None
+        for rate in USB_SERIAL_BAUDRATES:
+            try:
+                ans = yield self.packet().baudrate(rate).send()
+            except Exception as exc:
+                last_error = exc
+                continue
+            baudrate = int(ans.baudrate)
+            self.baudrate = baudrate
+            returnValue(baudrate)
+        raise last_error or RuntimeError("Could not set a supported baudrate")
 
     def shutdown(self):
         """Disconnect from the serial port when we shut down."""
