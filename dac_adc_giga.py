@@ -1205,6 +1205,24 @@ class DAC_ADCServer(DeviceServer):
         except KeyboardInterrupt:
             print('Stopped')
 
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                print(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
+
         try:
             yield dev.reset_input_buffer()
         except:
