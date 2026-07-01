@@ -34,17 +34,20 @@ def main():
 	csds = []
 
 	print('setting conversion time')
-	set_convtime = 500
+	set_convtime = 1000
 	true_convtime = da.set_conversiontime(0, set_convtime)
 	print('set conversion time')
 
 	fs = 1.0/(true_convtime)*1e6
-	cutoff = fs / 2.0
+	cutoff = fs / 2.0 * 0.8
 	
 	print('start data acquisition for background 0V')
-	for i in range(10):
+	time_start = time.time()
+	for i in range(5):
 		print(i)
-		out = da.time_series_adc_read([0], set_convtime, 50000*true_convtime + 500)
+		print(time.time() - time_start)
+		out = da.time_series_adc_read([0], set_convtime, 600000*true_convtime + 500)
+		print(len(out[0]))
 		print('finished adc read')
 		#bg = out[1]/100.0 - np.mean(out[1])/100.0
 		sig = out[0]/100.0 - np.mean(out[0])/100.0
@@ -52,7 +55,7 @@ def main():
 		#bg = lowpass(bg, fs, cutoff)
 		sig = lowpass(sig, fs, cutoff)
 		#f_bg, P_den_bg = signal.welch(bg, fs, nperseg=10000, scaling='density') 
-		f_sig, P_den_sig = signal.welch(sig, fs, nperseg=2000, scaling='density') 
+		f_sig, P_den_sig = signal.welch(sig, fs, nperseg=5000, scaling='density') 
 		#_, csd_gnd_sig = signal.csd(sig, bg, fs, nperseg=10000, scaling='density')
 		#_, coherence = signal.coherence(sig, bg, fs, nperseg=500)
 
