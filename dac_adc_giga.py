@@ -1434,7 +1434,7 @@ class DAC_ADCServer(DeviceServer):
         returnValue(ans)
     
     @setting(140, returns='s')
-    def calibrate_all_adc_channel_full_scale(self,c):
+    def calibrate_all_adc_channels_full_scale(self,c):
         """
         Calibrates ADC Full scale for specified channel.
         Connect a full scale voltage to specified channel.
