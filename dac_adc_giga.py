@@ -429,7 +429,8 @@ class DAC_ADCServer(DeviceServer):
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -490,11 +491,6 @@ class DAC_ADCServer(DeviceServer):
         if numSteps < 1:
             raise ValueError("voltageLists must have at least one step")
 
-        # Get conversion time to estimate expected ADC readings
-        conv_time_us = 500.0  # default
-        if adcPorts:
-            conv_time_us = yield self.get_conversion_time(c, adcPorts[0])
-
         command_parts = [
             "AWG_WITH_ADC",
             str(dacN),
@@ -519,8 +515,7 @@ class DAC_ADCServer(DeviceServer):
         if run_forever:
             totalbytes = float('inf')
         else:
-            total_dac_time_us = numSteps * numCycles * dacInterval_us
-            expected_adc_readings = int(total_dac_time_us // conv_time_us)
+            expected_adc_readings = numSteps * numCycles
             totalbytes = expected_adc_readings * adcN * 4
 
         batch_count = 0
@@ -573,6 +568,25 @@ class DAC_ADCServer(DeviceServer):
 
         except KeyboardInterrupt:
             print('AWG stopped by user')
+
+        if not run_forever:
+            extraBytes = b''
+            bytestoread = yield dev.in_waiting()
+            if bytestoread > 0:
+                while not extraBytes.endswith(b'\n'):
+                    bytestoread = yield dev.in_waiting()
+                    if bytestoread > 0:
+                        tmp = yield dev.readByte(bytestoread)
+                        extraBytes += tmp
+
+            try:
+                decoded = extraBytes.decode('utf-8').strip()
+                if decoded.startswith('FAILURE'):
+                    yield dev.reset_input_buffer()
+                    raise ValueError(decoded)
+            except UnicodeDecodeError as e:
+                print(f"Decode error at byte {e.start}: {e.reason}")
+                print(f"Raw data: {extraBytes}")
 
         # Send STOP command to firmware
         yield dev.write("STOP\n")
@@ -738,7 +752,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-                    yield dev.clear_input_buffer()
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -768,7 +782,8 @@ class DAC_ADCServer(DeviceServer):
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -921,7 +936,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
-                    yield dev.clear_input_buffer()
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -951,7 +966,8 @@ class DAC_ADCServer(DeviceServer):
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -1030,7 +1046,24 @@ class DAC_ADCServer(DeviceServer):
         except KeyboardInterrupt:
             print('Stopped')
 
-        #Reads BUFFER_RAMP_FINISHED
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
+
         try:
             yield dev.reset_input_buffer()
         except:
@@ -1224,7 +1257,8 @@ class DAC_ADCServer(DeviceServer):
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -1305,9 +1339,27 @@ class DAC_ADCServer(DeviceServer):
                 
                 channels[channel_index].append(float(voltage))
 
-        
+
         except KeyboardInterrupt:
             print('Stopped')
+
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
 
         try:
             yield dev.reset_input_buffer()
