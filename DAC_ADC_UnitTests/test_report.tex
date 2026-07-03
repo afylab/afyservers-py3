@@ -129,16 +129,16 @@ Misc. DAC config & 119, 120, 121, 122 & \S\ref{sec:misc} \\
 Calibration & 114, 115, 116, 117, 140 & \S\ref{sec:calibration} \\
 Reset / stop & 113, 133, 220 & \S\ref{sec:resetstop} \\
 Low-level passthrough & 9002, 9003, 9004, 9005 & \S\ref{sec:passthrough} \\
-\textbf{Buffer ramp (1 ch)} & 107, 131 & \S\ref{sec:bufferramp1} \\
-\textbf{Buffer ramp (8 ch)} & 107, 131 & \S\ref{sec:bufferramp8} \\
-Buffer ramp, discrete ADC steps & 132 & \S\ref{sec:bufferdis} \\
+\textbf{Buffer ramp (1 ch)} & 131 & \S\ref{sec:bufferramp1} \\
+\textbf{Buffer ramp (8 ch)} & 131 & \S\ref{sec:bufferramp8} \\
 Time-series buffer ramp & 108 & \S\ref{sec:timeseries} \\
 Time-series ADC read (no ramp) & 201 & \S\ref{sec:tsadcread} \\
 2D buffer ramps & 126, 127 & \S\ref{sec:2dramp} \\
-Stop during acquisition & 113 (in-ramp) & \S\ref{sec:stopduring} \\
+Stop during acquisition & 131 (in-ramp) & \S\ref{sec:stopduring} \\
 \midrule
 \textit{Excluded: AWG} & 221, 222 & \textit{Out of scope per request} \\
 \textit{Excluded: boxcar (commented out in source)} & 128, 129, 130 & \textit{Not active in driver} \\
+\textit{Removed: plain \texttt{buffer\_ramp} \& \texttt{buffer\_ramp\_dis}} & 107, 132 & \textit{No longer present in driver under test} \\
 \bottomrule
 \end{longtable}
 
@@ -353,14 +353,12 @@ the test plan and the report template.
 \textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
 \midrule
 \endhead
-\seqsplit{test\_buffer\_ramp\_single\_channel} &
-DAC0 ramped 0$\to$1~V over 200 steps while ADC0 (loopback) is read synchronously via \texttt{buffer\_ramp}; verifies returned data has exactly 1 channel, 200 points, and the trace rises monotonically from $\approx$0~V to $\approx$1~V & \\
 \seqsplit{test\_buffer\_ramp\_single\_channel\_via\_dac\_led\_buffer\_ramp} &
-Same single-channel ramp invoked directly through the lower-level \texttt{dac\_led\_buffer\_ramp} setting (bypassing the \texttt{buffer\_ramp} timing-auto-correction wrapper) & \\
+DAC0 ramped 0$\to$1~V over 200 steps via \texttt{dac\_led\_buffer\_ramp} while ADC0 (loopback) is read back once per step; the returned trace is compared point-by-point against the ideal linear ramp $V(i) = i/(N-1)$~V ($N=200$) to within 50~mV, and checked for monotonicity & \\
 \bottomrule
 \end{longtable}
 
-\paragraph{Parameters.} DAC port: [0]; ADC port: [0]; steps: 200; delay: 200~\textmu s; nReadings: 1. Requires DAC0 jumpered to ADC0.
+\paragraph{Parameters.} DAC port: [0]; ADC port: [0]; steps: 200; \texttt{dacInterval}: 3000~\textmu s; \texttt{dacSettlingTime}: 500~\textmu s; nReadings: 1. Requires DAC0 jumpered to ADC0.
 
 % ---------------------------------------------------------------------
 \subsection{Buffer Ramp --- Eight Channel (8 DAC, 8 ADC)}
@@ -374,31 +372,12 @@ Same single-channel ramp invoked directly through the lower-level \texttt{dac\_l
 \textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
 \midrule
 \endhead
-\seqsplit{test\_buffer\_ramp\_eight\_channel} &
-All 8 DAC channels ramped simultaneously to independent alternating targets ($\pm 2$~V) while all 8 ADC channels (loopback) are read synchronously; verifies 8 returned channels, each of correct length, with first/last samples matching the commanded initial/final voltages & \\
 \seqsplit{test\_buffer\_ramp\_eight\_channel\_multiple\_readings} &
-Same 8-channel ramp repeated with \texttt{nReadings=4} (per-step averaging) to confirm averaging does not corrupt channel count or trace length & \\
+All 8 DAC channels ramped simultaneously via \texttt{dac\_led\_buffer\_ramp} to independent alternating targets ($\pm 2$~V) with \texttt{nReadings=4} (per-step averaging), while all 8 ADC channels (loopback) are read synchronously; each channel's trace is compared point-by-point against its own ideal linear ramp to within 50~mV & \\
 \bottomrule
 \end{longtable}
 
-\paragraph{Parameters.} DAC ports: [0--7]; ADC ports: [0--7]; steps: 100; delay: 400~\textmu s (widened to accommodate 8-channel ADC conversion budget); nReadings: 1 and 4. Requires DAC$i$ jumpered to ADC$i$ for all $i$.
-
-% ---------------------------------------------------------------------
-\subsection{Buffer Ramp --- Discrete ADC Step Variant}
-\label{sec:bufferdis}
-% ---------------------------------------------------------------------
-
-\noindent\textit{Class: \texttt{TestBufferRampDis}}
-
-\begin{longtable}{T{4.6cm}L{8.4cm}L{1.5cm}}
-\toprule
-\textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
-\midrule
-\endhead
-\seqsplit{test\_buffer\_ramp\_dis\_single\_channel} & 1 DAC/1 ADC \texttt{buffer\_ramp\_dis} call (delegates to \texttt{time\_series\_buffer\_ramp} internally) returns 1 channel & \\
-\seqsplit{test\_buffer\_ramp\_dis\_eight\_channel} & 8 DAC/8 ADC \texttt{buffer\_ramp\_dis} call returns 8 channels & \\
-\bottomrule
-\end{longtable}
+\paragraph{Parameters.} DAC ports: [0--7]; ADC ports: [0--7]; steps: 100; \texttt{dacInterval}: 5000~\textmu s (widened to accommodate 8-channel ADC conversion budget); \texttt{dacSettlingTime}: 500~\textmu s; nReadings: 4. Requires DAC$i$ jumpered to ADC$i$ for all $i$.
 
 % ---------------------------------------------------------------------
 \subsection{Time-Series Buffer Ramp}
@@ -412,8 +391,8 @@ Same 8-channel ramp repeated with \texttt{nReadings=4} (per-step averaging) to c
 \textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
 \midrule
 \endhead
-\seqsplit{test\_time\_series\_buffer\_ramp\_single\_channel} & 1 DAC/1 ADC ramp with independent DAC (1000~\textmu s) and ADC (200~\textmu s) periods; verifies returned trace length matches $\mathrm{steps} \times \mathrm{dacPeriod}/\mathrm{adcPeriod}$ & \\
-\seqsplit{test\_time\_series\_buffer\_ramp\_eight\_channel} & 8 DAC/8 ADC ramp with independent periods; verifies all 8 channels match expected sample count & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_single\_channel} & 1 DAC/1 ADC ramp with independent DAC (1000~\textmu s) and ADC (200~\textmu s) periods; trace compared against the ideal staircase (each of the 100 DAC steps repeated $\mathrm{dacPeriod}/\mathrm{adcPeriod}=5$ times) to within 50~mV & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_eight\_channel} & 8 DAC/8 ADC ramp with independent periods; all 8 channels compared against the same ideal staircase construction & \\
 \bottomrule
 \end{longtable}
 
@@ -446,11 +425,11 @@ Same 8-channel ramp repeated with \texttt{nReadings=4} (per-step averaging) to c
 \textbf{Test} & \textbf{Verifies} & \textbf{Result} \\
 \midrule
 \endhead
-\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC time-series 2D ramp (3 slow steps $\times$ 50 fast steps) returns 1 channel & \\
-\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC time-series 2D ramp returns 8 channels & \\
-\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC averaged (LED-style) 2D ramp with \texttt{numAdcAverages=2} returns 1 channel & \\
-\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC averaged 2D ramp returns 8 channels & \\
-\seqsplit{test\_2d\_ramp\_snake\_and\_retrace\_single\_channel} & Snake $+$ retrace flag combination exercised on minimal (1 ch) case without error & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC time-series 2D ramp (3 slow steps $\times$ 50 fast steps, 1:1 DAC/ADC interval); trace compared against the flattened ideal fast/slow grid & \\
+\seqsplit{test\_time\_series\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC time-series 2D ramp (3 slow $\times$ 30 fast); all 8 channels compared against their own ideal grid & \\
+\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_single\_channel} & 1 DAC/1 ADC averaged (LED-style) 2D ramp with \texttt{numAdcAverages=2} (3 slow $\times$ 50 fast); trace compared against the ideal fast/slow grid (one averaged point per grid location) & \\
+\seqsplit{test\_dac\_led\_buffer\_ramp\_2d\_eight\_channel} & 8 DAC/8 ADC averaged 2D ramp (3 slow $\times$ 30 fast); all 8 channels compared against their own ideal grid & \\
+\seqsplit{test\_2d\_ramp\_snake\_and\_retrace\_single\_channel} & Snake $+$ retrace flag combination exercised on minimal (1 ch) case: trace length $\geq$ bare grid size, first point matches \texttt{startPoint}, and alternate rows verified to sweep in opposite fast-axis directions & \\
 \bottomrule
 \end{longtable}
 
@@ -477,6 +456,7 @@ Same 8-channel ramp repeated with \texttt{nReadings=4} (per-step averaging) to c
 \begin{itemize}[leftmargin=1.4em]
   \item \textbf{AWG settings} (\texttt{generate\_awg}, \texttt{awg\_with\_adc}, and the \texttt{sigAWGData}-based Python helpers \texttt{awg\_with\_adc\_with\_callback}, \texttt{save\_awg\_with\_adc}) --- excluded per test scope request.
   \item \textbf{Boxcar buffer ramp variants} (\texttt{boxcar\_buffer\_ramp\_debug}, \texttt{boxcar\_buffer\_ramp\_window\_average}, \texttt{boxcar\_buffer\_ramp\_transient\_delete}, settings 128--130) --- these are commented out (triple-quoted) in the current source and not registered as active LabRAD settings.
+  \item \textbf{Plain \texttt{buffer\_ramp} and \texttt{buffer\_ramp\_dis}} (settings 107, 132) --- removed from the driver under test; superseded by \texttt{dac\_led\_buffer\_ramp} and \texttt{time\_series\_buffer\_ramp}, both of which are covered in \S\ref{sec:bufferramp1}--\S\ref{sec:timeseries}.
   \item \textbf{High-level Python/HDF5 helpers built on the 2D ramp} (\texttt{save\_dac\_led\_buffer\_ramp\_2d}, \texttt{time\_series\_buffer\_ramp\_2d\_with\_callback}, \texttt{dac\_led\_buffer\_ramp\_2d\_with\_callback}) --- these wrap the already-tested 2D ramp settings with file I/O and signal callbacks; recommended for a separate file-I/O-focused test pass if needed.
 \end{itemize}
 

@@ -34,7 +34,7 @@ def main():
 	csds = []
 
 	print('setting conversion time')
-	set_convtime = 1000
+	set_convtime = 200
 	true_convtime = da.set_conversiontime(0, set_convtime)
 	print('set conversion time')
 
@@ -43,10 +43,10 @@ def main():
 	
 	print('start data acquisition for background 0V')
 	time_start = time.time()
-	for i in range(5):
+	for i in range(10):
 		print(i)
 		print(time.time() - time_start)
-		out = da.time_series_adc_read([0], set_convtime, 600000*true_convtime + 500)
+		out = da.time_series_adc_read([0], set_convtime, 500000*true_convtime + 100)
 		print(len(out[0]))
 		print('finished adc read')
 		#bg = out[1]/100.0 - np.mean(out[1])/100.0
@@ -55,7 +55,7 @@ def main():
 		#bg = lowpass(bg, fs, cutoff)
 		sig = lowpass(sig, fs, cutoff)
 		#f_bg, P_den_bg = signal.welch(bg, fs, nperseg=10000, scaling='density') 
-		f_sig, P_den_sig = signal.welch(sig, fs, nperseg=5000, scaling='density') 
+		f_sig, P_den_sig = signal.welch(sig, fs, nperseg=100000, scaling='density') 
 		#_, csd_gnd_sig = signal.csd(sig, bg, fs, nperseg=10000, scaling='density')
 		#_, coherence = signal.coherence(sig, bg, fs, nperseg=500)
 
@@ -94,6 +94,8 @@ def main():
 
 	#plt.loglog(freqs_sig[0], np.sqrt(avg_pspec_bg)*1e9)
 	plt.loglog(freqs_sig[0], np.sqrt(avg_pspec_sig)*1e9)
+	plt.ylim((1e0, 1e3))
+	plt.xlim((0.1, 3000))
 	#plt.semilogx(freqs_sig[0], avg_coh)
 	plt.xlabel('frequency (Hz)', size = 15)
 	plt.ylabel('Spectral Density [nV/$\\sqrt{Hz}$]')

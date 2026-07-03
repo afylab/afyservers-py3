@@ -1533,8 +1533,8 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         yield dev.write("INQUIRY_OSG\n")
-        ans = [0]*32
-        for i in range(32):
+        ans = [0]*16
+        for i in range(16):
             ans[i] = yield dev.read()
 
         returnValue(ans)

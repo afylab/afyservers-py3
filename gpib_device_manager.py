@@ -22,9 +22,10 @@
 
 from twisted.internet.defer import DeferredList, DeferredLock
 from twisted.internet.reactor import callLater
+from twisted.internet.defer import returnValue
 
 from labrad.server import (LabradServer, setting,
-                           inlineCallbacks, returnValue)
+                           inlineCallbacks)
 from labrad.units import Unit,Value
 
 """
