@@ -389,6 +389,7 @@ class DAC_ADCServer(DeviceServer):
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -565,6 +566,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -736,6 +738,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                    yield dev.clear_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -918,6 +921,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                    yield dev.clear_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -1010,6 +1014,7 @@ class DAC_ADCServer(DeviceServer):
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
             dev.setramping(False)
 
@@ -1186,6 +1191,7 @@ class DAC_ADCServer(DeviceServer):
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -1283,6 +1289,7 @@ class DAC_ADCServer(DeviceServer):
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
