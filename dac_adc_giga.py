@@ -59,6 +59,159 @@ USB_SERIAL_BAUDRATES = (
 )
 BAUD = USB_SERIAL_BAUDRATES[0]
 
+
+class _HDF52DRampWriter(object):
+    """Write completed 2D ramp lines into a fixed-size SWMR dataset."""
+
+    def __init__(self, filename, dac_ports, adc_ports, metadata):
+        # h5py remains optional unless streaming output is explicitly requested.
+        import h5py
+
+        supplied_path = str(filename)
+        self.path = Path(supplied_path).expanduser().resolve()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(
+                "Cannot create the HDF5 output directory {!r} on the computer "
+                "running DAC-ADC-GIGA. Check the spelling and permissions of "
+                "hdf5Path (supplied path: {!r}). Windows reported: {}".format(
+                    str(self.path.parent), supplied_path, exc
+                )
+            )
+        if self.path.exists():
+            raise ValueError(
+                "HDF5 output file already exists; refusing to overwrite it: "
+                + str(self.path)
+            )
+        self.dac_ports = list(dac_ports)
+        self.adc_ports = list(adc_ports)
+        self.column_names = (
+            ["point_index", "line_index"]
+            + [f"dac_{port}" for port in self.dac_ports]
+            + [f"adc_{port}" for port in self.adc_ports]
+        )
+        self.h5py = h5py
+        self.metadata = dict(metadata)
+        self.file = None
+        self.dataset = None
+        self.points_written = 0
+
+    @staticmethod
+    def _line_dac_values(line_index, point_count, start_point, fast_axis,
+                         slow_axis, steps_slow, retrace, snake):
+        if retrace and not snake:
+            slow_step = line_index // 2
+            forward = (line_index % 2) == 0
+        else:
+            slow_step = line_index
+            forward = (not snake) or (slow_step % 2 == 0)
+
+        slow_denominator = steps_slow - 1 if steps_slow > 1 else 1
+        slow_fraction = float(slow_step) / slow_denominator
+        slow_position = np.asarray(start_point) + slow_fraction * np.asarray(slow_axis)
+        fast_fraction = np.linspace(0.0, 1.0, point_count)
+        if not forward:
+            fast_fraction = fast_fraction[::-1]
+        return slow_position[None, :] + fast_fraction[:, None] * np.asarray(fast_axis)
+
+    def initialize(self, point_count, start_point, fast_axis, slow_axis,
+                   steps_slow, retrace, snake):
+        """Create and initialize the full scan grid before acquisition."""
+        total_lines = steps_slow * (2 if retrace and not snake else 1)
+        total_rows = total_lines * point_count
+        self.file = self.h5py.File(self.path, "x", libver="latest")
+        self.dataset = self.file.create_dataset(
+            "data",
+            shape=(total_rows, len(self.column_names)),
+            dtype=np.float64,
+            chunks=(point_count, len(self.column_names)),
+        )
+        self.dataset.attrs["column_names"] = self.column_names
+        self.dataset.attrs["points_per_line"] = point_count
+        self.dataset.attrs["total_lines"] = total_lines
+        for key, value in self.metadata.items():
+            self.dataset.attrs[key] = value
+
+        # Match the fixed-size file convention used by the existing 2D
+        # plotter: point/line indices and DAC coordinates exist for the whole
+        # scan immediately; ADC cells retain HDF5's normal zero fill until
+        # their line arrives, matching the lab's existing sweep files.
+        coordinate_columns = 2 + len(self.dac_ports)
+        for line_index in range(total_lines):
+            dac_values = self._line_dac_values(
+                line_index, point_count, start_point, fast_axis, slow_axis,
+                steps_slow, retrace, snake,
+            )
+            coordinates = np.column_stack((
+                np.arange(point_count),
+                np.full(point_count, line_index),
+                dac_values,
+            ))
+            start = line_index * point_count
+            self.dataset[start:start + point_count, :coordinate_columns] = coordinates
+        self.file.flush()
+        # Readers such as Desktop/2d_plotter can now open this file with
+        # swmr=True and refresh the dataset while the ramp is still running.
+        self.file.swmr_mode = True
+
+    def append_line(self, line_index, channels, start_point, fast_axis,
+                    slow_axis, steps_slow, retrace, snake):
+        lengths = [len(values) for values in channels if len(values)]
+        if not lengths:
+            return
+        point_count = max(lengths)
+        if self.file is None:
+            raise RuntimeError("HDF5 ramp writer was not initialized")
+        expected_point_count = int(self.dataset.attrs["points_per_line"])
+        if point_count != expected_point_count:
+            raise ValueError(
+                "2D ramp line {} contains {} points; expected {}".format(
+                    line_index, point_count, expected_point_count
+                )
+            )
+
+        adc_values = np.full((point_count, len(self.adc_ports)), np.nan)
+        for channel_index, values in enumerate(channels[:len(self.adc_ports)]):
+            count = min(point_count, len(values))
+            adc_values[:count, channel_index] = values[:count]
+
+        start = line_index * point_count
+        adc_start_column = 2 + len(self.dac_ports)
+        self.dataset[start:start + point_count, adc_start_column:] = adc_values
+        self.points_written += point_count
+        # Flush every completed line for crash resilience and live readers.
+        self.dataset.flush()
+        self.file.flush()
+
+    def write_point(self, point_index, values):
+        """Write and flush one interleaved ADC sample group immediately."""
+        if self.file is None:
+            raise RuntimeError("HDF5 ramp writer was not initialized")
+        if point_index < 0 or point_index >= self.dataset.shape[0]:
+            raise ValueError("2D ramp point index is outside the output dataset")
+        adc_start_column = 2 + len(self.dac_ports)
+        values = np.asarray(values, dtype=np.float64)
+        count = min(len(values), len(self.adc_ports))
+        self.dataset[point_index, adc_start_column:adc_start_column + count] = values[:count]
+        self.points_written += 1
+        self.dataset.flush()
+        self.file.flush()
+
+    def close(self, delete_if_empty=False):
+        if getattr(self, "file", None) is not None:
+            self.file.flush()
+            self.file.close()
+            self.file = None
+        if delete_if_empty and self.points_written == 0 and self.path.exists():
+            self.path.unlink()
+
+
+def _make_2d_ramp_writer(hdf5_path, dac_ports, adc_ports, **metadata):
+    if not hdf5_path:
+        return None
+    return _HDF52DRampWriter(hdf5_path, dac_ports, adc_ports, metadata)
+
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
 
@@ -556,11 +709,18 @@ class DAC_ADCServer(DeviceServer):
                         batch_count += 1
 
                 if data.startswith(b'FAILURE'):
+                    idle_reads = 0
                     while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
                     yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
@@ -600,8 +760,8 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
 
-    @setting(126, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', dacInterval_us='v[]', adcInterval_us='v[]', returns='**v[]')
-    def time_series_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, dacInterval_us, adcInterval_us):
+    @setting(126, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', dacInterval_us='v[]', adcInterval_us='v[]', hdf5Path='s', returns='**v[]')
+    def time_series_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, dacInterval_us, adcInterval_us, hdf5Path=''):
         """
         TIME_SERIES_BUFFER_RAMP_2D sweeps an arbitrary 2D plane within the DAC
         phase space. The plane is defined by a common `startPoint` plus two
@@ -621,6 +781,8 @@ class DAC_ADCServer(DeviceServer):
             snake: If true, alternate fast direction between slow steps.
             dacInterval_us: Time between DAC updates.
             adcInterval_us: Time between ADC acquisitions.
+            hdf5Path: Optional output file. Each completed line is appended and
+                flushed immediately in SWMR mode for backup and live plotting.
 
         Emits:
             sig2DRampLine payloads with the following keys:
@@ -649,8 +811,20 @@ class DAC_ADCServer(DeviceServer):
 
         dac_interval = float(dacInterval_us)
         adc_interval = float(adcInterval_us)
+        writer = _make_2d_ramp_writer(
+            hdf5Path, dacPorts, adcPorts, start_point=start_point,
+            fast_axis_vector=fast_axis, slow_axis_vector=slow_axis,
+            steps_fast=int(stepsFast), steps_slow=int(stepsSlow),
+            retrace=bool(retrace), snake=bool(snake),
+            dac_interval_us=dac_interval, adc_interval_us=adc_interval,
+            ramp_type="time_series",
+        )
 
-        dev = self.selectedDevice(c)
+        points_per_line = max(1, int(stepsFast * dac_interval / adc_interval))
+        if writer is not None:
+            writer.initialize(points_per_line, start_point, fast_axis, slow_axis,
+                              stepsSlow, retrace, snake)
+
         retrace_flag = "1.0" if retrace else "0.0"
         snake_flag = "1.0" if snake else "0.0"
         command_parts = [
@@ -669,16 +843,22 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in slow_axis],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\n")
+        try:
+            dev = self.selectedDevice(c)
+            yield dev.write(",".join(command_parts) + "\n")
+        except Exception:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
+            raise
         channels = []
         data = b''
         dev.setramping(True)
         
         # Calculate bytes per line
-        points_per_line = max(1, int(stepsFast * dac_interval / adc_interval))
         bytes_per_line = points_per_line * adcN * 4
         total_lines = stepsSlow * (2 if retrace and not snake else 1)
         current_line = 0
+        saved_point_count = 0
         slow_denominator = (stepsSlow - 1) if stepsSlow > 1 else 1
         
         try:
@@ -696,6 +876,21 @@ class DAC_ADCServer(DeviceServer):
                         data = data + tmp
                         nbytes = nbytes + bytestoread
                 
+                # Persist each complete ADC sample group immediately. Hold a
+                # possible textual FAILURE prefix until it can be identified.
+                failure_prefix = bool(data) and (
+                    b'FAILURE'.startswith(data) or data.startswith(b'FAILURE')
+                )
+                bytes_per_point = adcN * 4
+                while (not failure_prefix and
+                       len(data) >= (saved_point_count + 1) * bytes_per_point):
+                    point_start = saved_point_count * bytes_per_point
+                    point_data = data[point_start:point_start + bytes_per_point]
+                    point_values = np.frombuffer(point_data, dtype=np.float32).astype(float)
+                    if writer is not None:
+                        writer.write_point(saved_point_count, point_values)
+                    saved_point_count += 1
+
                 # Check if we have complete line(s) to emit
                 while len(data) >= (current_line + 1) * bytes_per_line:
                     line_start = current_line * bytes_per_line
@@ -747,11 +942,18 @@ class DAC_ADCServer(DeviceServer):
                     current_line += 1
                 
                 if data.startswith(b'FAILURE'):
+                    idle_reads = 0
                     while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
                     yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
@@ -768,6 +970,9 @@ class DAC_ADCServer(DeviceServer):
 
         except KeyboardInterrupt:
             print('Stopped')
+        finally:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
@@ -778,6 +983,9 @@ class DAC_ADCServer(DeviceServer):
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
                     extraBytes += tmp
+                else:
+                    # stop_ramp may already have drained a partial response.
+                    break
 
         try:
             decoded = extraBytes.decode('utf-8').strip()
@@ -796,8 +1004,8 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
     
-    @setting(127, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', numAdcAverages='i', dacInterval_us='v[]', dacSettlingTime_us='v[]', returns='**v[]')
-    def dac_led_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, numAdcAverages, dacInterval_us, dacSettlingTime_us):
+    @setting(127, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', numAdcAverages='i', dacInterval_us='v[]', dacSettlingTime_us='v[]', hdf5Path='s', returns='**v[]')
+    def dac_led_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, numAdcAverages, dacInterval_us, dacSettlingTime_us, hdf5Path=''):
         """
         DAC_LED_BUFFER_RAMP_2D performs averaged LED-style measurements while
         sweeping an arbitrary planar slice of the DAC phase space. The slice is
@@ -833,8 +1041,20 @@ class DAC_ADCServer(DeviceServer):
 
         dac_interval = float(dacInterval_us)
         dac_settling = float(dacSettlingTime_us)
+        writer = _make_2d_ramp_writer(
+            hdf5Path, dacPorts, adcPorts, start_point=start_point,
+            fast_axis_vector=fast_axis, slow_axis_vector=slow_axis,
+            steps_fast=int(stepsFast), steps_slow=int(stepsSlow),
+            retrace=bool(retrace), snake=bool(snake),
+            num_adc_averages=int(numAdcAverages),
+            dac_interval_us=dac_interval, dac_settling_time_us=dac_settling,
+            ramp_type="dac_led",
+        )
 
-        dev = self.selectedDevice(c)
+        if writer is not None:
+            writer.initialize(stepsFast, start_point, fast_axis, slow_axis,
+                              stepsSlow, retrace, snake)
+
         retrace_flag = "1.0" if retrace else "0.0"
         snake_flag = "1.0" if snake else "0.0"
         command_parts = [
@@ -854,7 +1074,13 @@ class DAC_ADCServer(DeviceServer):
             *[str(v) for v in slow_axis],
             *[str(ch) for ch in adcPorts],
         ]
-        yield dev.write(",".join(command_parts) + "\n")
+        try:
+            dev = self.selectedDevice(c)
+            yield dev.write(",".join(command_parts) + "\n")
+        except Exception:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
+            raise
         channels = []
         data = b''
         dev.setramping(True)
@@ -863,6 +1089,7 @@ class DAC_ADCServer(DeviceServer):
         bytes_per_line = stepsFast * adcN * 4
         total_lines = stepsSlow * (2 if retrace and not snake else 1)
         current_line = 0
+        saved_point_count = 0
         slow_denominator = (stepsSlow - 1) if stepsSlow > 1 else 1
         
         try:
@@ -880,6 +1107,21 @@ class DAC_ADCServer(DeviceServer):
                         data = data + tmp
                         nbytes = nbytes + bytestoread
                 
+                # Persist each complete ADC sample group immediately. Hold a
+                # possible textual FAILURE prefix until it can be identified.
+                failure_prefix = bool(data) and (
+                    b'FAILURE'.startswith(data) or data.startswith(b'FAILURE')
+                )
+                bytes_per_point = adcN * 4
+                while (not failure_prefix and
+                       len(data) >= (saved_point_count + 1) * bytes_per_point):
+                    point_start = saved_point_count * bytes_per_point
+                    point_data = data[point_start:point_start + bytes_per_point]
+                    point_values = np.frombuffer(point_data, dtype=np.float32).astype(float)
+                    if writer is not None:
+                        writer.write_point(saved_point_count, point_values)
+                    saved_point_count += 1
+
                 # Check if we have complete line(s) to emit
                 while len(data) >= (current_line + 1) * bytes_per_line:
                     line_start = current_line * bytes_per_line
@@ -931,11 +1173,18 @@ class DAC_ADCServer(DeviceServer):
                     current_line += 1
                 
                 if data.startswith(b'FAILURE'):
+                    idle_reads = 0
                     while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
                     yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
@@ -952,6 +1201,9 @@ class DAC_ADCServer(DeviceServer):
 
         except KeyboardInterrupt:
             print('Stopped')
+        finally:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
@@ -962,6 +1214,9 @@ class DAC_ADCServer(DeviceServer):
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
                     extraBytes += tmp
+                else:
+                    # stop_ramp may already have drained a partial response.
+                    break
 
         try:
             decoded = extraBytes.decode('utf-8').strip()
