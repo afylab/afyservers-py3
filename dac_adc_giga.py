@@ -31,16 +31,186 @@ timeout = 20
 
 from labrad.server import setting, Signal
 from labrad.devices import DeviceServer,DeviceWrapper
+from labrad.wrappers import connectAsync
 from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet import reactor, defer
 # import labrad.units as units
 from labrad.types import Value
+import json
 import numpy as np
 import time
-# from exceptions import IndexError
+from pathlib import Path
+from datetime import datetime
 
-TIMEOUT = Value(20,'s')
-BAUD    = 115200
+TIMEOUT = Value(5,'s')
+USB_SERIAL_BAUDRATES = (
+    12000000,
+    8000000,
+    6000000,
+    4000000,
+    3000000,
+    2000000,
+    1500000,
+    1000000,
+    921600,
+    460800,
+    230400,
+    115200,
+)
+BAUD = USB_SERIAL_BAUDRATES[0]
+
+
+class _HDF52DRampWriter(object):
+    """Write completed 2D ramp lines into a fixed-size SWMR dataset."""
+
+    def __init__(self, filename, dac_ports, adc_ports, metadata):
+        # h5py remains optional unless streaming output is explicitly requested.
+        import h5py
+
+        supplied_path = str(filename)
+        self.path = Path(supplied_path).expanduser().resolve()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(
+                "Cannot create the HDF5 output directory {!r} on the computer "
+                "running DAC-ADC-GIGA. Check the spelling and permissions of "
+                "hdf5Path (supplied path: {!r}). Windows reported: {}".format(
+                    str(self.path.parent), supplied_path, exc
+                )
+            )
+        if self.path.exists():
+            raise ValueError(
+                "HDF5 output file already exists; refusing to overwrite it: "
+                + str(self.path)
+            )
+        self.dac_ports = list(dac_ports)
+        self.adc_ports = list(adc_ports)
+        self.column_names = (
+            ["point_index", "line_index"]
+            + [f"dac_{port}" for port in self.dac_ports]
+            + [f"adc_{port}" for port in self.adc_ports]
+        )
+        self.h5py = h5py
+        self.metadata = dict(metadata)
+        self.file = None
+        self.dataset = None
+        self.points_written = 0
+
+    @staticmethod
+    def _line_dac_values(line_index, point_count, start_point, fast_axis,
+                         slow_axis, steps_slow, retrace, snake):
+        if retrace and not snake:
+            slow_step = line_index // 2
+            forward = (line_index % 2) == 0
+        else:
+            slow_step = line_index
+            forward = (not snake) or (slow_step % 2 == 0)
+
+        slow_denominator = steps_slow - 1 if steps_slow > 1 else 1
+        slow_fraction = float(slow_step) / slow_denominator
+        slow_position = np.asarray(start_point) + slow_fraction * np.asarray(slow_axis)
+        fast_fraction = np.linspace(0.0, 1.0, point_count)
+        if not forward:
+            fast_fraction = fast_fraction[::-1]
+        return slow_position[None, :] + fast_fraction[:, None] * np.asarray(fast_axis)
+
+    def initialize(self, point_count, start_point, fast_axis, slow_axis,
+                   steps_slow, retrace, snake):
+        """Create and initialize the full scan grid before acquisition."""
+        total_lines = steps_slow * (2 if retrace and not snake else 1)
+        total_rows = total_lines * point_count
+        self.file = self.h5py.File(self.path, "x", libver="latest")
+        self.dataset = self.file.create_dataset(
+            "data",
+            shape=(total_rows, len(self.column_names)),
+            dtype=np.float64,
+            chunks=(point_count, len(self.column_names)),
+        )
+        self.dataset.attrs["column_names"] = self.column_names
+        self.dataset.attrs["points_per_line"] = point_count
+        self.dataset.attrs["total_lines"] = total_lines
+        for key, value in self.metadata.items():
+            self.dataset.attrs[key] = value
+
+        # Match the fixed-size file convention used by the existing 2D
+        # plotter: point/line indices and DAC coordinates exist for the whole
+        # scan immediately; ADC cells retain HDF5's normal zero fill until
+        # their line arrives, matching the lab's existing sweep files.
+        coordinate_columns = 2 + len(self.dac_ports)
+        for line_index in range(total_lines):
+            dac_values = self._line_dac_values(
+                line_index, point_count, start_point, fast_axis, slow_axis,
+                steps_slow, retrace, snake,
+            )
+            coordinates = np.column_stack((
+                np.arange(point_count),
+                np.full(point_count, line_index),
+                dac_values,
+            ))
+            start = line_index * point_count
+            self.dataset[start:start + point_count, :coordinate_columns] = coordinates
+        self.file.flush()
+        # Readers such as Desktop/2d_plotter can now open this file with
+        # swmr=True and refresh the dataset while the ramp is still running.
+        self.file.swmr_mode = True
+
+    def append_line(self, line_index, channels, start_point, fast_axis,
+                    slow_axis, steps_slow, retrace, snake):
+        lengths = [len(values) for values in channels if len(values)]
+        if not lengths:
+            return
+        point_count = max(lengths)
+        if self.file is None:
+            raise RuntimeError("HDF5 ramp writer was not initialized")
+        expected_point_count = int(self.dataset.attrs["points_per_line"])
+        if point_count != expected_point_count:
+            raise ValueError(
+                "2D ramp line {} contains {} points; expected {}".format(
+                    line_index, point_count, expected_point_count
+                )
+            )
+
+        adc_values = np.full((point_count, len(self.adc_ports)), np.nan)
+        for channel_index, values in enumerate(channels[:len(self.adc_ports)]):
+            count = min(point_count, len(values))
+            adc_values[:count, channel_index] = values[:count]
+
+        start = line_index * point_count
+        adc_start_column = 2 + len(self.dac_ports)
+        self.dataset[start:start + point_count, adc_start_column:] = adc_values
+        self.points_written += point_count
+        # Flush every completed line for crash resilience and live readers.
+        self.dataset.flush()
+        self.file.flush()
+
+    def write_point(self, point_index, values):
+        """Write and flush one interleaved ADC sample group immediately."""
+        if self.file is None:
+            raise RuntimeError("HDF5 ramp writer was not initialized")
+        if point_index < 0 or point_index >= self.dataset.shape[0]:
+            raise ValueError("2D ramp point index is outside the output dataset")
+        adc_start_column = 2 + len(self.dac_ports)
+        values = np.asarray(values, dtype=np.float64)
+        count = min(len(values), len(self.adc_ports))
+        self.dataset[point_index, adc_start_column:adc_start_column + count] = values[:count]
+        self.points_written += 1
+        self.dataset.flush()
+        self.file.flush()
+
+    def close(self, delete_if_empty=False):
+        if getattr(self, "file", None) is not None:
+            self.file.flush()
+            self.file.close()
+            self.file = None
+        if delete_if_empty and self.points_written == 0 and self.path.exists():
+            self.path.unlink()
+
+
+def _make_2d_ramp_writer(hdf5_path, dac_ports, adc_ports, **metadata):
+    if not hdf5_path:
+        return None
+    return _HDF52DRampWriter(hdf5_path, dac_ports, adc_ports, metadata)
 
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
@@ -60,17 +230,31 @@ class DAC_ADCWrapper(DeviceWrapper):
         self.ctx = server.context()
         self.port = port
         self.ramping = False
+        yield self.packet().open(port).send()
+        baudrate = yield self.set_fastest_baudrate()
         p = self.packet()
-        p.open(port)
-        p.baudrate(BAUD)
         p.read()  # clear out the read buffer
         p.timeout(TIMEOUT)
-        print(" CONNECTED ")
         yield p.send()
+        print(" CONNECTED at %d baud " % baudrate)
 
     def packet(self):
         """Create a packet in our private context."""
         return self.server.packet(context=self.ctx)
+
+    @inlineCallbacks
+    def set_fastest_baudrate(self):
+        last_error = None
+        for rate in USB_SERIAL_BAUDRATES:
+            try:
+                ans = yield self.packet().baudrate(rate).send()
+            except Exception as exc:
+                last_error = exc
+                continue
+            baudrate = int(ans.baudrate)
+            self.baudrate = baudrate
+            returnValue(baudrate)
+        raise last_error or RuntimeError("Could not set a supported baudrate")
 
     def shutdown(self):
         """Disconnect from the serial port when we shut down."""
@@ -145,6 +329,8 @@ class DAC_ADCServer(DeviceServer):
     sigConvTimeSet       = Signal(sPrefix+4,'signal__conversion_time_set', '*s') #
     sigBufferRampStarted = Signal(sPrefix+5,'signal__buffer_ramp_started', '*s') #
     sigSpectrumStarted = Signal(sPrefix+6, 'signal__spectrum_started','*s') #
+    sig2DRampLine = Signal(sPrefix+7, 'signal__2d_ramp_line', '*s') #
+    sigAWGData = Signal(sPrefix+8, 'signal__awg_data', '*s') #
 
     @inlineCallbacks
     def initServer(self):
@@ -209,7 +395,7 @@ class DAC_ADCServer(DeviceServer):
             returnValue("Error: invalid voltage. It must be between -10 and 10.")
             return
         dev=self.selectedDevice(c)
-        yield dev.write("SET,%i,%f\r\n"%(port,voltage))
+        yield dev.write("SET,%i,%f\n"%(port,voltage))
         ans = yield dev.read()
         voltage=ans.lower().partition(' to ')[2][:-1]
         self.sigOutputSet([str(port),voltage])
@@ -225,7 +411,7 @@ class DAC_ADCServer(DeviceServer):
         if not (port in range(8)):
             returnValue("Error: invalid port number.")
             return
-        yield dev.write("GET_ADC,%i\r\n"%port)
+        yield dev.write("GET_ADC,%i\n"%port)
         ans = yield dev.read()
         self.sigInputRead([str(port),str(ans)])
         returnValue(float(ans))
@@ -238,7 +424,7 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         dev.timeout(Value(steps*delay + 5000000,'us')) # 5 more seconds than however long the ramp should take
-        yield dev.write("RAMP1,%i,%f,%f,%i,%i\r\n"%(port,ivoltage,fvoltage,steps,delay))
+        yield dev.write("RAMP1,%i,%f,%f,%i,%i\n"%(port,ivoltage,fvoltage,steps,delay))
         self.sigRamp1Started([str(port),str(ivoltage),str(fvoltage),str(steps),str(delay)])
         ans = yield dev.read()
         dev.timeout(TIMEOUT) # set timeout back to default
@@ -252,7 +438,7 @@ class DAC_ADCServer(DeviceServer):
         """
         dev=self.selectedDevice(c)
         dev.timeout(Value(steps*delay + 5000000,'us')) # 5 more seconds than however long the ramp should take
-        yield dev.write("RAMP2,%i,%i,%f,%f,%f,%f,%i,%i\r\n"%(port1,port2,ivoltage1,ivoltage2,fvoltage1,fvoltage2,steps,delay))
+        yield dev.write("RAMP2,%i,%i,%f,%f,%f,%f,%i,%i\n"%(port1,port2,ivoltage1,ivoltage2,fvoltage1,fvoltage2,steps,delay))
         self.sigRamp2Started([str(port1),str(port2),str(ivoltage1),str(ivoltage2),str(fvoltage1),str(fvoltage2),str(steps),str(delay)])
         ans = yield dev.read()
         dev.timeout(TIMEOUT) # set timeout back to default
@@ -260,12 +446,47 @@ class DAC_ADCServer(DeviceServer):
 
     @setting(131,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,nReadings=1):
-       out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, int(delay*0.8 + 0.5), nReadings=nReadings)
-       returnValue(out)
+        
+        
+        # first, see if settlingTime is allowed
+        # check to see if buffer ramp is compatible with the current ADC configuration
+        convTimeSum = [0.0, 0.0, 0.0, 0.0]
+        numAdcChannels = len(adcPorts)
+        numAdcAverages = nReadings if nReadings is not None else 1
+
+        for i in range(numAdcChannels):
+            chNum = adcPorts[i]
+            board_num = chNum // 4
+            conv_time = yield self.get_conversion_time(c, chNum)
+            convTimeSum[board_num] += conv_time
+
+        maxConvTime = max(convTimeSum)
+        maxConvTimeTotal = maxConvTime * numAdcAverages
+        
+        
+
+        dac_settling_time_us = int(delay*0.8 + 0.5) # default settling time
+        dac_interval_us = delay
+        
+        
+        if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
+            dac_settling_time_us = dac_interval_us - maxConvTimeTotal - 181
+            dac_settling_time_us = max(dac_settling_time_us, 100)
+            # print(f"DAC settling time is too long for specified ADC conversion time, minimized settling time to {dac_settling_time_us}us")
+        
+        
+        if maxConvTimeTotal + dac_settling_time_us + 180 >= dac_interval_us:
+            dac_interval_us = maxConvTimeTotal + dac_settling_time_us + 181
+            print(f"DAC interval is too short for specified ADC conversion time, made delay {dac_interval_us}us")
+        
+        
+        
+        out = yield self.dac_led_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, dac_interval_us, dac_settling_time_us, nReadings=nReadings)
+        returnValue(out)
 
     @setting(132,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',delay='v[]',nReadings='i',adcSteps='i',returns='**v[]')#(*v[],*v[])')
     def buffer_ramp_dis(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,delay,adcSteps,nReadings=1):
-       out = yield self.time_series_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, steps, steps*delay/adcSteps )
+       out = yield self.time_series_buffer_ramp(c, dacPorts, adcPorts, ivoltages, fvoltages, steps, delay, steps*delay/adcSteps )
        returnValue(out)
 
 
@@ -277,33 +498,22 @@ class DAC_ADCServer(DeviceServer):
         """
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacPorts = ""
-        sadcPorts = ""
-        sivoltages = ""
-        sfvoltages = ""
-        
-        sdacconfig = ""
-        sadcconfig = ""
-
-
-        for x in range(dacN):
-            sdacPorts = sdacPorts + str(dacPorts[x])
-            sivoltages = sivoltages + str(ivoltages[x]) + ","
-            sfvoltages = sfvoltages + str(fvoltages[x]) + ","
-            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
-
-        sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"DAC_LED_BUFFER_RAMP,{dacN},{adcN},{steps},{nReadings},{dacInterval},{dacSettlingTime},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "DAC_LED_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(steps),
+            str(nReadings),
+            str(dacInterval),
+            str(dacSettlingTime),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages],
+            *[str(v) for v in fvoltages],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacInterval), str(dacSettlingTime), str(nReadings)])
 
         channels = []
@@ -326,12 +536,13 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -362,7 +573,7 @@ class DAC_ADCServer(DeviceServer):
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
@@ -371,7 +582,8 @@ class DAC_ADCServer(DeviceServer):
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -382,41 +594,276 @@ class DAC_ADCServer(DeviceServer):
         except:
             print("Error clearing the serial buffer after buffer_ramp")
         returnValue(channels)
-    
-    # da.time_series_buffer_ramp_2d([0],[1],[0],[0],[5],[5],[0],10,5,true,500,1000)
-    @setting(126,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',snake='b',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')
-    def time_series_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,snake,dacPeriod_us,adcPeriod_us):
-        slowDacN = len(slowDacPorts)
-        fastDacN = len(fastDacPorts)
-        adcN = len(adcPorts)
-        sadcPorts = ""
-        
-        sslowDacConfig = ""
-        sfastDacConfig = ""
-        
-        for x in range(slowDacN):
-            sslowDacConfig += f"{slowDacPorts[x]},{slowDacV0[x]},{slowDacVf[x]},"
-        
-        sslowDacConfig = sslowDacConfig[:-1]
-        
-        for x in range(fastDacN):
-            sfastDacConfig += f"{fastDacPorts[x]},{fastDacV0[x]},{fastDacVf[x]},"
-        
-        sfastDacConfig = sfastDacConfig[:-1]
-        
-        for x in range(adcN):
-            sadcPorts += f"{adcPorts[x]},"
-        
-        sadcPorts = sadcPorts[:-1]
+
+    # @setting(107,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacInterval='v[]',dacSettlingTime='v[]',nReadings='i',returns='**v[]')#(*v[],*v[])')
+    @setting(221,dacPorts='*i', voltageLists='**v[]',dacInterval='i',returns='**v[]')
+    def generate_awg(self,c,dacPorts,voltageLists,dacInterval):
+        """
+        BUFFER_RAMP ramps the specified output channels from the initial voltages to the final voltages and reads the specified input channels in a synchronized manner.
+        It does it within an specified number steps and a delay (dacInterval, microseconds) between the update of the last output channel and the reading of the first input channel.
+        """
+        dacN = len(dacPorts)
+        numDacStepsPerLoop = len(voltageLists[0]) if voltageLists else 0
         
         dev = self.selectedDevice(c)
-        yield dev.write(f"2D_TIME_SERIES_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{adcPeriod_us},{'1' if retrace else '0'},{'1' if snake else '0'},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
+        
+        command_parts = [
+            "AWG_BUFFER_RAMP",
+            str(dacN),
+            str(numDacStepsPerLoop),
+            str(dacInterval),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for channel in voltageLists for v in channel],
+        ]
+        command = ",".join(command_parts) + "\n"
+        print(command)
+        yield dev.write(command)
+        
+        self.sigBufferRampStarted([dacPorts, [], voltageLists, str(0), str(numDacStepsPerLoop), str(dacInterval), str(0), str(0)])
+
+        channels = []
+        data = b''
+        
+        dev.setramping(True)
+
+        try:
+            yield dev.reset_input_buffer()
+        except:
+            print("Error clearing the serial buffer after buffer_ramp")
+        returnValue(channels)
+
+    @setting(222, dacPorts='*i', adcPorts='*i', voltageLists='**v[]', dacInterval_us='i', numCycles='i', returns='**v[]')
+    def awg_with_adc(self, c, dacPorts, adcPorts, voltageLists, dacInterval_us, numCycles=1):
+        """Run precomputed DAC waveform while reading ADC. numCycles=0 runs forever until STOP."""
+        dacPorts = [int(ch) for ch in dacPorts]
+        adcPorts = [int(ch) for ch in adcPorts]
+        dacN = len(dacPorts)
+        adcN = len(adcPorts)
+        numSteps = len(voltageLists[0]) if voltageLists else 0
+
+        if numSteps < 1:
+            raise ValueError("voltageLists must have at least one step")
+
+        command_parts = [
+            "AWG_WITH_ADC",
+            str(dacN),
+            str(adcN),
+            str(numSteps),
+            str(dacInterval_us),
+            str(numCycles),
+            *[str(ch) for ch in dacPorts],
+            *[str(ch) for ch in adcPorts],
+            *[str(v) for channel in voltageLists for v in channel],
+        ]
+
+        dev = self.selectedDevice(c)
+        yield dev.write(",".join(command_parts) + "\n")
+
+        channels = [[] for _ in range(adcN)]
+        data = b''
+        dev.setramping(True)
+
+        # Calculate expected ADC readings based on timing (0 = run forever)
+        run_forever = (numCycles == 0)
+        if run_forever:
+            totalbytes = float('inf')
+        else:
+            expected_adc_readings = numSteps * numCycles
+            totalbytes = expected_adc_readings * adcN * 4
+
+        batch_count = 0
+
+        try:
+            nbytes = 0
+            while dev.isramping() and (nbytes < totalbytes):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    if not run_forever and nbytes + bytestoread > totalbytes:
+                        tmp = yield dev.readByte(int(totalbytes) - nbytes)
+                        data = data + tmp
+                        nbytes = int(totalbytes)
+                    else:
+                        tmp = yield dev.readByte(bytestoread)
+                        data = data + tmp
+                        nbytes = nbytes + bytestoread
+
+                    # Parse and emit any complete readings
+                    complete_readings = len(data) // (adcN * 4)
+                    while batch_count < complete_readings:
+                        batch_start = batch_count * adcN * 4
+                        batch_data = data[batch_start:batch_start + adcN * 4]
+
+                        reading_values = []
+                        for i in range(adcN):
+                            voltage = np.frombuffer(batch_data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+                            channels[i].append(float(voltage))
+                            reading_values.append(float(voltage))
+
+                        # Emit signal with this batch
+                        payload = json.dumps({
+                            "reading_index": batch_count,
+                            "adc_ports": adcPorts,
+                            "values": reading_values,
+                        })
+                        self.sigAWGData([payload])
+                        batch_count += 1
+
+                if data.startswith(b'FAILURE'):
+                    idle_reads = 0
+                    while not data.endswith(b'\n'):
+                        bytestoread = yield dev.in_waiting()
+                        if bytestoread > 0:
+                            tmp = yield dev.readByte(bytestoread)
+                            data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
+                    yield dev.reset_input_buffer()
+                    raise ValueError(data.decode('utf-8').strip())
+
+            dev.setramping(False)
+
+        except KeyboardInterrupt:
+            print('AWG stopped by user')
+
+        if not run_forever:
+            extraBytes = b''
+            bytestoread = yield dev.in_waiting()
+            if bytestoread > 0:
+                while not extraBytes.endswith(b'\n'):
+                    bytestoread = yield dev.in_waiting()
+                    if bytestoread > 0:
+                        tmp = yield dev.readByte(bytestoread)
+                        extraBytes += tmp
+
+            try:
+                decoded = extraBytes.decode('utf-8').strip()
+                if decoded.startswith('FAILURE'):
+                    yield dev.reset_input_buffer()
+                    raise ValueError(decoded)
+            except UnicodeDecodeError as e:
+                print(f"Decode error at byte {e.start}: {e.reason}")
+                print(f"Raw data: {extraBytes}")
+
+        # Send STOP command to firmware
+        yield dev.write("STOP\n")
+        yield self.sleep(0.1)
+
+        # Drain any remaining bytes
+        try:
+            yield dev.reset_input_buffer()
+        except:
+            print("Error clearing serial buffer after AWG")
+
+        returnValue(channels)
+
+    @setting(126, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', dacInterval_us='v[]', adcInterval_us='v[]', hdf5Path='s', returns='**v[]')
+    def time_series_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, dacInterval_us, adcInterval_us, hdf5Path=''):
+        """
+        TIME_SERIES_BUFFER_RAMP_2D sweeps an arbitrary 2D plane within the DAC
+        phase space. The plane is defined by a common `startPoint` plus two
+        spanning vectors (`fastAxisVector`, `slowAxisVector`). For every slow
+        step the fast axis is traversed `stepsFast` times, with DAC updates
+        occurring every `dacInterval_us` and ADC captures every `adcInterval_us`.
+
+        Args:
+            dacPorts: Sequence of DAC channel IDs participating in the sweep.
+            adcPorts: Sequence of ADC channel IDs to digitize.
+            startPoint: Absolute DAC coordinates at the origin of the plane.
+            fastAxisVector: Vector added as the fast parameter runs from 0→1.
+            slowAxisVector: Vector added as the slow parameter runs from 0→1.
+            stepsFast: Number of DAC points sampled along the fast parameter.
+            stepsSlow: Number of slow parameter points.
+            retrace: If true, perform backward traces for each slow step.
+            snake: If true, alternate fast direction between slow steps.
+            dacInterval_us: Time between DAC updates.
+            adcInterval_us: Time between ADC acquisitions.
+            hdf5Path: Optional output file. Each completed line is appended and
+                flushed immediately in SWMR mode for backup and live plotting.
+
+        Emits:
+            sig2DRampLine payloads with the following keys:
+              - `line_index`: Absolute line counter.
+              - `slow_param`: Normalized slow parameter value [0, 1].
+              - `fast_direction`: 'forward' or 'backward' traversal of fast axis.
+              - `slow_position`/`slow_voltages`: DAC coordinates at fast param 0.
+              - `start_point`, `fast_axis_vector`, `slow_axis_vector`: Defining geometry.
+              - `dac_ports`, `adc_ports`: Channel metadata.
+              - `channels`: ADC samples decoded per channel for the line.
+        """
+        dacPorts = [int(ch) for ch in dacPorts]
+        adcPorts = [int(ch) for ch in adcPorts]
+        start_point = [float(v) for v in startPoint]
+        fast_axis = [float(v) for v in fastAxisVector]
+        slow_axis = [float(v) for v in slowAxisVector]
+
+        dacN = len(dacPorts)
+        adcN = len(adcPorts)
+
+        if not (len(start_point) == len(fast_axis) == len(slow_axis) == dacN):
+            raise ValueError("startPoint, fastAxisVector, and slowAxisVector must each have one entry per DAC channel")
+
+        if stepsFast <= 0 or stepsSlow <= 0:
+            raise ValueError("stepsFast and stepsSlow must be positive integers")
+
+        dac_interval = float(dacInterval_us)
+        adc_interval = float(adcInterval_us)
+        writer = _make_2d_ramp_writer(
+            hdf5Path, dacPorts, adcPorts, start_point=start_point,
+            fast_axis_vector=fast_axis, slow_axis_vector=slow_axis,
+            steps_fast=int(stepsFast), steps_slow=int(stepsSlow),
+            retrace=bool(retrace), snake=bool(snake),
+            dac_interval_us=dac_interval, adc_interval_us=adc_interval,
+            ramp_type="time_series",
+        )
+
+        points_per_line = max(1, int(stepsFast * dac_interval / adc_interval))
+        if writer is not None:
+            writer.initialize(points_per_line, start_point, fast_axis, slow_axis,
+                              stepsSlow, retrace, snake)
+
+        retrace_flag = "1.0" if retrace else "0.0"
+        snake_flag = "1.0" if snake else "0.0"
+        command_parts = [
+            "2D_TIME_SERIES_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(stepsFast),
+            str(stepsSlow),
+            f"{dac_interval}",
+            f"{adc_interval}",
+            retrace_flag,
+            snake_flag,
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in start_point],
+            *[str(v) for v in fast_axis],
+            *[str(v) for v in slow_axis],
+            *[str(ch) for ch in adcPorts],
+        ]
+        try:
+            dev = self.selectedDevice(c)
+            yield dev.write(",".join(command_parts) + "\n")
+        except Exception:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
+            raise
         channels = []
         data = b''
         dev.setramping(True)
+        
+        # Calculate bytes per line
+        bytes_per_line = points_per_line * adcN * 4
+        total_lines = stepsSlow * (2 if retrace and not snake else 1)
+        current_line = 0
+        saved_point_count = 0
+        slow_denominator = (stepsSlow - 1) if stepsSlow > 1 else 1
+        
         try:
             nbytes = 0
-            totalbytes = stepsSlow * int(stepsFast * dacPeriod_us / adcPeriod_us) * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = total_lines * bytes_per_line
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -428,12 +875,86 @@ class DAC_ADCServer(DeviceServer):
                         tmp = yield dev.readByte(bytestoread)
                         data = data + tmp
                         nbytes = nbytes + bytestoread
+                
+                # Persist each complete ADC sample group immediately. Hold a
+                # possible textual FAILURE prefix until it can be identified.
+                failure_prefix = bool(data) and (
+                    b'FAILURE'.startswith(data) or data.startswith(b'FAILURE')
+                )
+                bytes_per_point = adcN * 4
+                while (not failure_prefix and
+                       len(data) >= (saved_point_count + 1) * bytes_per_point):
+                    point_start = saved_point_count * bytes_per_point
+                    point_data = data[point_start:point_start + bytes_per_point]
+                    point_values = np.frombuffer(point_data, dtype=np.float32).astype(float)
+                    if writer is not None:
+                        writer.write_point(saved_point_count, point_values)
+                    saved_point_count += 1
+
+                # Check if we have complete line(s) to emit
+                while len(data) >= (current_line + 1) * bytes_per_line:
+                    line_start = current_line * bytes_per_line
+                    line_end = (current_line + 1) * bytes_per_line
+                    line_data = data[line_start:line_end]
+                    
+                    # Decode this line's data
+                    line_channels = [[] for _ in range(adcN)]
+                    for i in range(len(line_data) // 4):
+                        voltage = np.frombuffer(line_data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+                        channel_index = i % adcN
+                        line_channels[channel_index].append(float(voltage))
+                    
+                    # Calculate slow axis voltage(s) and direction
+                    if retrace and not snake:
+                        slow_step = current_line // 2
+                        is_forward = (current_line % 2) == 0
+                    else:
+                        slow_step = current_line
+                        if snake:
+                            is_forward = (slow_step % 2) == 0
+                        else:
+                            is_forward = True
+
+                    slow_param = float(slow_step) / slow_denominator if slow_denominator else 0.0
+                    slow_position = [
+                        start_point[j] + slow_param * slow_axis[j]
+                        for j in range(dacN)
+                    ]
+                    direction = 'forward' if is_forward else 'backward'
+                    
+                    # Emit signal for this line
+                    payload = json.dumps({
+                        "line_index": current_line,
+                        "slow_param": slow_param,
+                        "fast_direction": direction,
+                        "slow_position": slow_position,
+                        "slow_voltages": slow_position,
+                        "start_point": start_point,
+                        "fast_axis_vector": fast_axis,
+                        "slow_axis_vector": slow_axis,
+                        "direction": direction,
+                        "dac_ports": dacPorts,
+                        "channels": line_channels,
+                        "adc_ports": adcPorts,
+                    })
+                    self.sig2DRampLine([payload])
+                    
+                    current_line += 1
+                
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    idle_reads = 0
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -449,21 +970,28 @@ class DAC_ADCServer(DeviceServer):
 
         except KeyboardInterrupt:
             print('Stopped')
+        finally:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
                     extraBytes += tmp
+                else:
+                    # stop_ramp may already have drained a partial response.
+                    break
 
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -476,39 +1004,97 @@ class DAC_ADCServer(DeviceServer):
 
         returnValue(channels)
     
-    @setting(127,fastDacPorts='*i',slowDacPorts='*i',adcPorts='*i',fastDacV0='*v[]',fastDacVf='*v[]',slowDacV0='*v[]',slowDacVf='*v[]',stepsFast='i',stepsSlow='i',retrace='b',snake='b',numAdcAverages='i',dacPeriod_us='v[]',dacSettlingTime_us='v[]',returns='**v[]')
-    def dac_led_buffer_ramp_2d(self,c,fastDacPorts,slowDacPorts,adcPorts,fastDacV0,fastDacVf,slowDacV0,slowDacVf,stepsFast,stepsSlow,retrace,snake,numAdcAverages,dacPeriod_us,dacSettlingTime_us):
-        slowDacN = len(slowDacPorts)
-        fastDacN = len(fastDacPorts)
+    @setting(127, dacPorts='*i', adcPorts='*i', startPoint='*v[]', fastAxisVector='*v[]', slowAxisVector='*v[]', stepsFast='i', stepsSlow='i', retrace='b', snake='b', numAdcAverages='i', dacInterval_us='v[]', dacSettlingTime_us='v[]', hdf5Path='s', returns='**v[]')
+    def dac_led_buffer_ramp_2d(self, c, dacPorts, adcPorts, startPoint, fastAxisVector, slowAxisVector, stepsFast, stepsSlow, retrace, snake, numAdcAverages, dacInterval_us, dacSettlingTime_us, hdf5Path=''):
+        """
+        DAC_LED_BUFFER_RAMP_2D performs averaged LED-style measurements while
+        sweeping an arbitrary planar slice of the DAC phase space. The slice is
+        described by a `startPoint` and two spanning vectors
+        (`fastAxisVector`, `slowAxisVector`), with DAC updates occurring every
+        `dacInterval_us` and enforced settling of `dacSettlingTime_us`.
+
+        Args mirror those of `time_series_buffer_ramp_2d`, with `numAdcAverages`
+        specifying the per-point averaging budget prior to emitting a line.
+
+        Emits:
+            sig2DRampLine payloads with the same metadata additions as
+            `time_series_buffer_ramp_2d`, enabling downstream consumers to
+            reconstruct the active 2D slice.
+        """
+        dacPorts = [int(ch) for ch in dacPorts]
+        adcPorts = [int(ch) for ch in adcPorts]
+        start_point = [float(v) for v in startPoint]
+        fast_axis = [float(v) for v in fastAxisVector]
+        slow_axis = [float(v) for v in slowAxisVector]
+
+        dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sadcPorts = ""
-        
-        sslowDacConfig = ""
-        sfastDacConfig = ""
-        
-        for x in range(slowDacN):
-            sslowDacConfig += f"{slowDacPorts[x]},{slowDacV0[x]},{slowDacVf[x]},"
-        
-        sslowDacConfig = sslowDacConfig[:-1]
-        
-        for x in range(fastDacN):
-            sfastDacConfig += f"{fastDacPorts[x]},{fastDacV0[x]},{fastDacVf[x]},"
-        
-        sfastDacConfig = sfastDacConfig[:-1]
-        
-        for x in range(adcN):
-            sadcPorts += f"{adcPorts[x]},"
-        
-        sadcPorts = sadcPorts[:-1]
-        
-        dev = self.selectedDevice(c)
-        yield dev.write(f"2D_DAC_LED_BUFFER_RAMP,{fastDacN+slowDacN},{adcN},{stepsFast},{stepsSlow},{dacPeriod_us},{dacSettlingTime_us},{'1' if retrace else '0'},{'1' if snake else '0'},{numAdcAverages},{fastDacN},{sfastDacConfig},{slowDacN},{sslowDacConfig},{sadcPorts}\r\n")
+
+        if not (len(start_point) == len(fast_axis) == len(slow_axis) == dacN):
+            raise ValueError("startPoint, fastAxisVector, and slowAxisVector must each have one entry per DAC channel")
+
+        if stepsFast <= 0 or stepsSlow <= 0:
+            raise ValueError("stepsFast and stepsSlow must be positive integers")
+
+        if numAdcAverages <= 0:
+            raise ValueError("numAdcAverages must be a positive integer")
+
+        dac_interval = float(dacInterval_us)
+        dac_settling = float(dacSettlingTime_us)
+        writer = _make_2d_ramp_writer(
+            hdf5Path, dacPorts, adcPorts, start_point=start_point,
+            fast_axis_vector=fast_axis, slow_axis_vector=slow_axis,
+            steps_fast=int(stepsFast), steps_slow=int(stepsSlow),
+            retrace=bool(retrace), snake=bool(snake),
+            num_adc_averages=int(numAdcAverages),
+            dac_interval_us=dac_interval, dac_settling_time_us=dac_settling,
+            ramp_type="dac_led",
+        )
+
+        if writer is not None:
+            writer.initialize(stepsFast, start_point, fast_axis, slow_axis,
+                              stepsSlow, retrace, snake)
+
+        retrace_flag = "1.0" if retrace else "0.0"
+        snake_flag = "1.0" if snake else "0.0"
+        command_parts = [
+            "2D_DAC_LED_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(stepsFast),
+            str(stepsSlow),
+            f"{dac_interval}",
+            f"{dac_settling}",
+            retrace_flag,
+            snake_flag,
+            str(int(numAdcAverages)),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in start_point],
+            *[str(v) for v in fast_axis],
+            *[str(v) for v in slow_axis],
+            *[str(ch) for ch in adcPorts],
+        ]
+        try:
+            dev = self.selectedDevice(c)
+            yield dev.write(",".join(command_parts) + "\n")
+        except Exception:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
+            raise
         channels = []
         data = b''
         dev.setramping(True)
+        
+        # Calculate bytes per line
+        bytes_per_line = stepsFast * adcN * 4
+        total_lines = stepsSlow * (2 if retrace and not snake else 1)
+        current_line = 0
+        saved_point_count = 0
+        slow_denominator = (stepsSlow - 1) if stepsSlow > 1 else 1
+        
         try:
             nbytes = 0
-            totalbytes = stepsSlow * stepsFast * adcN * 4 * (2 if retrace and not snake else 1)
+            totalbytes = total_lines * bytes_per_line
             while dev.isramping() and (nbytes < totalbytes):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
@@ -520,12 +1106,86 @@ class DAC_ADCServer(DeviceServer):
                         tmp = yield dev.readByte(bytestoread)
                         data = data + tmp
                         nbytes = nbytes + bytestoread
+                
+                # Persist each complete ADC sample group immediately. Hold a
+                # possible textual FAILURE prefix until it can be identified.
+                failure_prefix = bool(data) and (
+                    b'FAILURE'.startswith(data) or data.startswith(b'FAILURE')
+                )
+                bytes_per_point = adcN * 4
+                while (not failure_prefix and
+                       len(data) >= (saved_point_count + 1) * bytes_per_point):
+                    point_start = saved_point_count * bytes_per_point
+                    point_data = data[point_start:point_start + bytes_per_point]
+                    point_values = np.frombuffer(point_data, dtype=np.float32).astype(float)
+                    if writer is not None:
+                        writer.write_point(saved_point_count, point_values)
+                    saved_point_count += 1
+
+                # Check if we have complete line(s) to emit
+                while len(data) >= (current_line + 1) * bytes_per_line:
+                    line_start = current_line * bytes_per_line
+                    line_end = (current_line + 1) * bytes_per_line
+                    line_data = data[line_start:line_end]
+                    
+                    # Decode this line's data
+                    line_channels = [[] for _ in range(adcN)]
+                    for i in range(len(line_data) // 4):
+                        voltage = np.frombuffer(line_data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+                        channel_index = i % adcN
+                        line_channels[channel_index].append(float(voltage))
+                    
+                    # Calculate slow axis voltage(s) and direction
+                    if retrace and not snake:
+                        slow_step = current_line // 2
+                        is_forward = (current_line % 2) == 0
+                    else:
+                        slow_step = current_line
+                        if snake:
+                            is_forward = (slow_step % 2) == 0
+                        else:
+                            is_forward = True
+
+                    slow_param = float(slow_step) / slow_denominator if slow_denominator else 0.0
+                    slow_position = [
+                        start_point[j] + slow_param * slow_axis[j]
+                        for j in range(dacN)
+                    ]
+                    direction = 'forward' if is_forward else 'backward'
+                    
+                    # Emit signal for this line
+                    payload = json.dumps({
+                        "line_index": current_line,
+                        "slow_param": slow_param,
+                        "fast_direction": direction,
+                        "slow_position": slow_position,
+                        "slow_voltages": slow_position,
+                        "start_point": start_point,
+                        "fast_axis_vector": fast_axis,
+                        "slow_axis_vector": slow_axis,
+                        "direction": direction,
+                        "dac_ports": dacPorts,
+                        "channels": line_channels,
+                        "adc_ports": adcPorts,
+                    })
+                    self.sig2DRampLine([payload])
+                    
+                    current_line += 1
+                
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    idle_reads = 0
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                            idle_reads = 0
+                        else:
+                            idle_reads += 1
+                            if idle_reads >= 10 or not dev.isramping():
+                                break
+                            yield self.sleep(0.001)
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -541,21 +1201,28 @@ class DAC_ADCServer(DeviceServer):
 
         except KeyboardInterrupt:
             print('Stopped')
+        finally:
+            if writer is not None:
+                writer.close(delete_if_empty=True)
 
         extraBytes = b''
         bytestoread = yield dev.in_waiting()
 
         if bytestoread > 0:
-            while not extraBytes.endswith(b'\r\n'):
+            while not extraBytes.endswith(b'\n'):
                 bytestoread = yield dev.in_waiting()
                 if bytestoread > 0:
                     tmp = yield dev.readByte(bytestoread)
                     extraBytes += tmp
+                else:
+                    # stop_ramp may already have drained a partial response.
+                    break
 
         try:
             decoded = extraBytes.decode('utf-8').strip()
             if decoded.startswith('FAILURE'):
-                print(decoded)
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
         except UnicodeDecodeError as e:
             print(f"Decode error at byte {e.start}: {e.reason}")
             print(f"Raw data: {extraBytes}")
@@ -575,21 +1242,25 @@ class DAC_ADCServer(DeviceServer):
         """
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacconfig = ""
-        sadcconfig = ""
-
-        for x in range(dacN):
-            sdacconfig += f"{dacPorts[x]},{ivoltages_1[x]},{fvoltages_1[x]},{ivoltages_2[x]},{fvoltages_2[x]},"
-
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcconfig += f"{adcPorts[x]},"
-        
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"BOXCAR_BUFFER_RAMP,{dacN},{adcN},{dacsteps},{numAdcMeasuresPerDacStep},{numAdcAverages},{numAdcConversionSkips},{adcConversionTime_us},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "BOXCAR_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(dacsteps),
+            str(numAdcMeasuresPerDacStep),
+            str(numAdcAverages),
+            str(numAdcConversionSkips),
+            str(adcConversionTime_us),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages_1],
+            *[str(v) for v in fvoltages_1],
+            *[str(v) for v in ivoltages_2],
+            *[str(v) for v in fvoltages_2],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\n")
         
         channels = []
         data = b''
@@ -609,11 +1280,12 @@ class DAC_ADCServer(DeviceServer):
                         data = data + tmp
                         nbytes = nbytes + bytestoread
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
             dev.setramping(False)
 
@@ -629,7 +1301,24 @@ class DAC_ADCServer(DeviceServer):
         except KeyboardInterrupt:
             print('Stopped')
 
-        #Reads BUFFER_RAMP_FINISHED
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
+
         try:
             yield dev.reset_input_buffer()
         except:
@@ -725,19 +1414,19 @@ class DAC_ADCServer(DeviceServer):
     @setting(133)
     def reset_adc(self,c):
         dev = self.selectedDevice(c)
-        yield dev.write("RESET\r\n")
+        yield dev.write("RESET\n")
     
     @setting(220)
     def hard_reset_adc(self,c):
         dev = self.selectedDevice(c)
-        yield dev.write("HARD_RESET\r\n")
+        yield dev.write("HARD_RESET\n")
         ans = yield dev.read()
         returnValue(ans)
         
     @setting(135, channel='i', returns='v[]')
     def get_conversion_time(self,c,channel):
         dev = self.selectedDevice(c)
-        yield dev.write(f"GET_CONVERT_TIME,{channel}\r\n")
+        yield dev.write(f"GET_CONVERT_TIME,{channel}\n")
         ans = yield dev.read()
         returnValue(float(ans))
         
@@ -748,18 +1437,16 @@ class DAC_ADCServer(DeviceServer):
         This function currently requires that all the ADCs being called have the same conversion time
         """
         adcN = len(adcPorts)
-        sadcPorts = ""
-        sadcconfig = ""
-        
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
         
         dev = self.selectedDevice(c)
-        
-        yield dev.write(f"TIME_SERIES_ADC_READ, {adcN}, {sadcconfig}, {convtime}, {totalTime}\r\n")
+        command_parts = [
+            "TIME_SERIES_ADC_READ",
+            str(adcN),
+            *[str(ch) for ch in adcPorts],
+            str(convtime),
+            str(totalTime),
+        ]
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigSpectrumStarted([adcPorts, totalTime])
         
         channels = []
@@ -786,12 +1473,13 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -811,6 +1499,25 @@ class DAC_ADCServer(DeviceServer):
         except KeyboardInterrupt:
             print('Stopped')
 
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
+
         try:
             yield dev.reset_input_buffer()
         except:
@@ -827,31 +1534,21 @@ class DAC_ADCServer(DeviceServer):
 
         dacN = len(dacPorts)
         adcN = len(adcPorts)
-        sdacPorts = ""
-        sadcPorts = ""
-        sivoltages = ""
-        sfvoltages = ""
-        sdacconfig = ""
-        sadcconfig = ""
-
-        for x in range(dacN):
-            sdacPorts = sdacPorts + str(dacPorts[x])
-            sivoltages = sivoltages + str(ivoltages[x]) + ","
-            sfvoltages = sfvoltages + str(fvoltages[x]) + ","
-            sdacconfig = sdacconfig + f"{dacPorts[x]},{ivoltages[x]},{fvoltages[x]},"
-
-        sivoltages = sivoltages[:-1]
-        sfvoltages = sfvoltages[:-1]
-        sdacconfig = sdacconfig[:-1]
-
-        for x in range(adcN):
-            sadcPorts = sadcPorts + str(adcPorts[x])
-            sadcconfig = sadcconfig + str(adcPorts[x]) + ","
-
-        sadcconfig = sadcconfig[:-1]
 
         dev = self.selectedDevice(c)
-        yield dev.write(f"TIME_SERIES_BUFFER_RAMP,{dacN},{adcN},{steps},{dacPeriod_us},{adcPeriod_us},{sdacconfig},{sadcconfig}\r\n")
+        command_parts = [
+            "TIME_SERIES_BUFFER_RAMP",
+            str(dacN),
+            str(adcN),
+            str(steps),
+            str(dacPeriod_us),
+            str(adcPeriod_us),
+            *[str(ch) for ch in dacPorts],
+            *[str(v) for v in ivoltages],
+            *[str(v) for v in fvoltages],
+            *[str(ch) for ch in adcPorts],
+        ]
+        yield dev.write(",".join(command_parts) + "\n")
         self.sigBufferRampStarted([dacPorts, adcPorts, ivoltages, fvoltages, str(steps), str(dacPeriod_us), str(adcPeriod_us)])
 
         channels = []
@@ -875,12 +1572,13 @@ class DAC_ADCServer(DeviceServer):
                         nbytes = nbytes + bytestoread
 
                 if data.startswith(b'FAILURE'):
-                    while not data.endswith(b'\r\n'):
+                    while not data.endswith(b'\n'):
                         bytestoread = yield dev.in_waiting()
                         if bytestoread > 0:
                             tmp = yield dev.readByte(bytestoread)
                             data += tmp
 
+                    yield dev.reset_input_buffer()
                     raise ValueError(data.decode('utf-8').strip())
 
             dev.setramping(False)
@@ -896,9 +1594,27 @@ class DAC_ADCServer(DeviceServer):
                 
                 channels[channel_index].append(float(voltage))
 
-        
+
         except KeyboardInterrupt:
             print('Stopped')
+
+        extraBytes = b''
+        bytestoread = yield dev.in_waiting()
+        if bytestoread > 0:
+            while not extraBytes.endswith(b'\n'):
+                bytestoread = yield dev.in_waiting()
+                if bytestoread > 0:
+                    tmp = yield dev.readByte(bytestoread)
+                    extraBytes += tmp
+
+        try:
+            decoded = extraBytes.decode('utf-8').strip()
+            if decoded.startswith('FAILURE'):
+                yield dev.reset_input_buffer()
+                raise ValueError(decoded)
+        except UnicodeDecodeError as e:
+            print(f"Decode error at byte {e.start}: {e.reason}")
+            print(f"Raw data: {extraBytes}")
 
         try:
             yield dev.reset_input_buffer()
@@ -917,7 +1633,7 @@ class DAC_ADCServer(DeviceServer):
         if not (82 <= time <= 2686):
             returnValue("Error: invalid conversion time. Must adhere to (82 <= t <= 2686) (t is in microseconds)")
         dev=self.selectedDevice(c)
-        yield dev.write("CONVERT_TIME,%i,%f\r\n"%(channel,time))
+        yield dev.write("CONVERT_TIME,%i,%f\n"%(channel,time))
         ans = yield dev.read()
         self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
@@ -933,7 +1649,7 @@ class DAC_ADCServer(DeviceServer):
         if not (3 <= fw <= 127):
             returnValue("Error: invalid conversion time. Must adhere to (3 <= fw <= 127)")
         dev=self.selectedDevice(c)
-        yield dev.write("CONVERT_TIME_FW,%i,%f\r\n"%(channel,fw))
+        yield dev.write("CONVERT_TIME_FW,%i,%f\n"%(channel,fw))
         ans = yield dev.read()
         # self.sigConvTimeSet([str(channel),str(ans)])
         returnValue(float(ans))
@@ -945,7 +1661,7 @@ class DAC_ADCServer(DeviceServer):
         IDN? returns the string.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("*IDN?\r\n")
+        yield dev.write("*IDN?\n")
         time.sleep(1)
         ans = yield dev.read()
         returnValue(ans)
@@ -956,7 +1672,7 @@ class DAC_ADCServer(DeviceServer):
         RDY? returns the string "READY" when the DAC-ADC is ready for a new operation.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("*RDY?\r\n")
+        yield dev.write("*RDY?\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -976,7 +1692,7 @@ class DAC_ADCServer(DeviceServer):
         Discards all elements from input buffer.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("STOP\r\n")
+        yield dev.write("STOP\n")
         dev.setramping(False)
 
         #Let ramps finish up
@@ -994,40 +1710,51 @@ class DAC_ADCServer(DeviceServer):
         Connect each DAC to each ADC channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("DAC_CH_CAL\r\n")
+        yield dev.write("DAC_CH_CAL\n")
         ans = yield dev.read()
         returnValue(ans)
 
     @setting(115,returns='s')
-    def adc_zero_sc_calibration(self,c):
+    def calibrate_all_adc_channels_zero_scale(self,c):
         """
-        Calibrates each DAC channel.
-        Connect each DAC to each ADC channel.
+        Calibrates ADC Zero scale for all channels.
+        Connect a zero scale voltage to all channels.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_ZERO_SC_CAL\r\n")
+        yield dev.write("CALIBRATE_ALL_ADC_CHANNELS_ZERO_SCALE\n")
         ans = yield dev.read()
         returnValue(ans)
 
-    @setting(116,returns='s')
-    def adc_ch_zero_sc_calibration(self,c):
+    @setting(116, channel='i', returns='s')
+    def calibrate_adc_channel_zero_scale(self,c, channel):
         """
-        Calibrates ADC Zero scale for each channel.
-        Connect a zero scale voltage to each channel.
+        Calibrates ADC Zero scale for specified channel.
+        Connect a zero scale voltage to specified channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_CH_ZERO_SC_CAL\r\n")
+        yield dev.write(f"CALIBRATE_ADC_CHANNEL_ZERO_SCALE,{channel}\n")
         ans = yield dev.read()
         returnValue(ans)
 
-    @setting(117,returns='s')
-    def adc_ch_full_sc_calibration(self,c):
+    @setting(117, channel='i', returns='s')
+    def calibrate_adc_channel_full_scale(self,c, channel):
         """
-        Calibrates ADC Full scale for each channel.
-        Connect a full scale voltage to each channel.
+        Calibrates ADC Full scale for specified channel.
+        Connect a full scale voltage to specified channel.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("ADC_CH_FULL_SC_CAL\r\n")
+        yield dev.write(f"CALIBRATE_ADC_CHANNEL_FULL_SCALE,{channel}\n")
+        ans = yield dev.read()
+        returnValue(ans)
+    
+    @setting(140, returns='s')
+    def calibrate_all_adc_channels_full_scale(self,c):
+        """
+        Calibrates ADC Full scale for specified channel.
+        Connect a full scale voltage to specified channel.
+        """
+        dev=self.selectedDevice(c)
+        yield dev.write(f"CALIBRATE_ALL_ADC_CHANNELS_FULL_SCALE\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1037,7 +1764,7 @@ class DAC_ADCServer(DeviceServer):
         Initializes DACs
         """
         dev=self.selectedDevice(c)
-        yield dev.write("INITIALIZE\r\n")
+        yield dev.write("INITIALIZE\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1047,7 +1774,7 @@ class DAC_ADCServer(DeviceServer):
         Sets delay unit. 0 = microseconds(default) 1 = miliseconds
         """
         dev=self.selectedDevice(c)
-        yield dev.write("SET_DUNIT,%i\r\n"%(unit))
+        yield dev.write("SET_DUNIT,%i\n"%(unit))
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1057,21 +1784,59 @@ class DAC_ADCServer(DeviceServer):
         Sets the dac full scale.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("FULL_SCALE,%f\r\n"%(voltage))
+        yield dev.write("FULL_SCALE,%f\n"%(voltage))
+        ans = yield dev.read()
+        returnValue(ans)
+
+    @setting(136, channel='i', limit='v', returns='s')
+    def setUpperLimit(self, c, channel, limit):
+        """
+        Sets the upper voltage limit for a specific DAC channel.
+        """
+        dev = self.selectedDevice(c)
+        yield dev.write("SET_UPPER_LIMIT,%i,%f\n" % (int(channel), float(limit)))
+        ans = yield dev.read()
+        returnValue(ans)
+
+    @setting(137, channel='i', limit='v', returns='s')
+    def setLowerLimit(self, c, channel, limit):
+        """
+        Sets the lower voltage limit for a specific DAC channel.
+        """
+        dev = self.selectedDevice(c)
+        yield dev.write("SET_LOWER_LIMIT,%i,%f\n" % (int(channel), float(limit)))
+        ans = yield dev.read()
+        returnValue(ans)
+    
+    @setting(138, channel='i', returns='v')
+    def getLowerLimit(self, c, channel, limit):
+        """
+        Gets the lower voltage limit for a specific DAC channel.
+        """
+        dev = self.selectedDevice(c)
+        yield dev.write("GET_LOWER_LIMIT,%i\n" % (int(channel)))
+        ans = yield dev.read()
+        returnValue(ans)
+    
+    @setting(139, channel='i', returns='v')
+    def getUpperLimit(self, c, channel, limit):
+        """
+        Gets the upper voltage limit for a specific DAC channel.
+        """
+        dev = self.selectedDevice(c)
+        yield dev.write("GET_UPPER_LIMIT,%i\n" % (int(channel)))
         ans = yield dev.read()
         returnValue(ans)
 
     @setting(121)
-    def set_offset_and_gain(self,c,offset_and_gain):
+    def set_offset_and_gain(self,c,channel,offset,gain):
         """
         Set the offset and gain for all DAC channels.
         """
         dev=self.selectedDevice(c)
-        message = "SET_OSG" + ",%f"*8 + "\r\n"
-        yield dev.write(message%(tuple(offset_and_gain)))
-        ans = [0]*8
-        for i in range(8):
-            ans[i] = yield dev.read()
+        message = f"SET_OSG,{channel},{offset},{gain}\n"
+        yield dev.write(message)
+        ans = yield dev.read()
 
         returnValue(ans)
 
@@ -1081,7 +1846,7 @@ class DAC_ADCServer(DeviceServer):
         Print the current offset and gain values for all DAC channels.
         """
         dev=self.selectedDevice(c)
-        yield dev.write("INQUIRY_OSG\r\n")
+        yield dev.write("INQUIRY_OSG\n")
         ans = [0]*32
         for i in range(32):
             ans[i] = yield dev.read()
@@ -1095,7 +1860,7 @@ class DAC_ADCServer(DeviceServer):
         Returns the serial number of the box.
         """
         dev = self.selectedDevice(c)
-        yield dev.write("SERIAL_NUMBER\r\n")
+        yield dev.write("SERIAL_NUMBER\n")
         ans = yield dev.read()
         returnValue(ans)
 
@@ -1104,14 +1869,14 @@ class DAC_ADCServer(DeviceServer):
         """
         SET_DAC_CODE writes a code between 0 and 1048576 to a channel and returns the channel and the code written to that DAC's register.
         """
-        if not (channel in range(4)):
+        if not (channel in range(8)):
             returnValue("Error: invalid port number.")
             return
         if (code > 1048576) or (code < 0):
             returnValue("Error: invalid code. Must be between 0 and 1048576.")
             return
         dev=self.selectedDevice(c)
-        yield dev.write("SET_DAC_CODE,%i,%i\r\n"%(channel,code))
+        yield dev.write("SET_DAC_CODE,%i,%i\n"%(channel,code))
         ans = yield dev.read()
         code = ans.lower().partition(' to ')[2][:-1]
         self.sigOutputSet([str(channel),code])
@@ -1125,7 +1890,7 @@ class DAC_ADCServer(DeviceServer):
         if not (channel in range(16)):
             returnValue("Error: invalid port number.")
         dev = self.selectedDevice(c)
-        yield dev.write("GET_DAC,%i\r\n"%(channel))
+        yield dev.write("GET_DAC,%i\n"%(channel))
         ans = yield dev.read()
         returnValue(float(ans))
 
@@ -1143,7 +1908,7 @@ class DAC_ADCServer(DeviceServer):
     @setting(9004)
     def query(self,c,phrase):
         dev=self.selectedDevice(c)
-        yield dev.write(phrase)
+        yield dev.write(f"{phrase}\n")
         ret = yield dev.read()
         returnValue(ret)
 
@@ -1156,7 +1921,7 @@ class DAC_ADCServer(DeviceServer):
     def send_read_requests(self,c):
         dev = self.selectedDevice(c)
         for port in [0,1,2,3]:
-            yield dev.write("GET_ADC,%i\r\n"%port)
+            yield dev.write("GET_ADC,%i\n"%port)
             ans = yield dev.read()
             self.sigInputRead([str(port),str(ans)])
 
@@ -1171,6 +1936,576 @@ class DAC_ADCServer(DeviceServer):
     # @setting(9101)
     # def send_get_dac_requests(self,c):
     #     yield
+
+
+def parse_2d_ramp_line_payload(payload):
+    """
+    Decode a `sig2DRampLine` message into a plain dictionary.
+
+    Returns a dict with fields such as `line_index`, `slow_param`,
+    `fast_direction`, `slow_position`, `start_point`, `fast_axis_vector`,
+    `slow_axis_vector`, `dac_ports`, `adc_ports`, and `channels`
+    (ADC samples per channel).
+    """
+    if isinstance(payload, (list, tuple)):
+        payload = payload[0]
+    if isinstance(payload, bytes):
+        payload = payload.decode('utf-8')
+    data = json.loads(payload)
+
+    data.setdefault("fast_direction", data.get("direction", "forward"))
+
+    slow_position = data.get("slow_position")
+    if slow_position is None:
+        slow_position = data.get("slow_voltages", [])
+    if slow_position is None:
+        slow_position = []
+    data["slow_position"] = [float(v) for v in slow_position]
+
+    data["start_point"] = [float(v) for v in data.get("start_point", [])]
+    data["fast_axis_vector"] = [float(v) for v in data.get("fast_axis_vector", [])]
+    data["slow_axis_vector"] = [float(v) for v in data.get("slow_axis_vector", [])]
+    data["adc_ports"] = list(data.get("adc_ports", []))
+    data["dac_ports"] = list(data.get("dac_ports", []))
+
+    channels = data.get("channels", [])
+    data["channels"] = [[float(v) for v in channel] for channel in channels]
+
+    return data
+
+
+@inlineCallbacks
+def _run_2d_ramp_with_callback(server, runner, runner_args, *,
+                               line_callback=None, device_index=None):
+    """
+    Common helper that subscribes to `sig2DRampLine` while running a ramp.
+
+    Each decoded line is passed to `line_callback`.  The underlying ramp
+    (``runner``) is invoked with ``runner_args`` and its normal return value
+    is propagated after the callback subscription is cleaned up.
+    """
+    if device_index is not None:
+        try:
+            yield server.select_device(device_index)
+        except Exception as exc:
+            print(f"Warning: failed to select device {device_index}: {exc}")
+
+    if line_callback is None:
+        def line_callback(_info):
+            return None
+
+    def handler(context, payload):
+        try:
+            info = parse_2d_ramp_line_payload(payload)
+        except Exception as e:
+            print("Error: failed to parse sig2DRampLine payload")
+            print(e)
+            return
+        d = defer.maybeDeferred(line_callback, info)
+        d.addErrback(lambda failure: print(f"Callback error: {failure}"))
+
+    yield server.signal__2d_ramp_line.connect(handler)
+    result = None
+    try:
+        result = yield runner(*runner_args)
+    finally:
+        try:
+            yield server.signal__2d_ramp_line.disconnect(handler)
+        except Exception as e:
+            print(e)
+            pass
+
+    returnValue(result)
+
+
+@inlineCallbacks
+def time_series_buffer_ramp_2d_with_callback(server, dacPorts, adcPorts,
+                                             startPoint, fastAxisVector,
+                                             slowAxisVector, stepsFast,
+                                             stepsSlow, retrace, snake,
+                                             dacInterval_us, adcInterval_us,
+                                             *, line_callback=None,
+                                             device_index=None):
+    """
+    Run the time-series 2D ramp and stream each line into a Python callback.
+
+    Args mirror the LabRAD setting.  When `line_callback` is supplied, it
+    receives dictionaries produced by :func:`parse_2d_ramp_line_payload`
+    (one per line).  If `device_index` is given, the helper selects that
+    device before running.  Returns the ramp data exactly as the setting would.
+    """
+    result = yield _run_2d_ramp_with_callback(
+        server,
+        server.time_series_buffer_ramp_2d,
+        (
+            dacPorts,
+            adcPorts,
+            startPoint,
+            fastAxisVector,
+            slowAxisVector,
+            stepsFast,
+            stepsSlow,
+            retrace,
+            snake,
+            dacInterval_us,
+            adcInterval_us,
+        ),
+        line_callback=line_callback,
+        device_index=device_index,
+    )
+    returnValue(result)
+
+
+@inlineCallbacks
+def dac_led_buffer_ramp_2d_with_callback(server, dacPorts, adcPorts,
+                                         startPoint, fastAxisVector,
+                                         slowAxisVector, stepsFast,
+                                         stepsSlow, retrace, snake,
+                                         numAdcAverages, dacInterval_us,
+                                         dacSettlingTime_us, *,
+                                         line_callback=None,
+                                         device_index=None):
+    """
+    Run the LED 2D ramp while firing a Python callback for every line.
+
+    Parameters match the LabRAD setting.  The optional `line_callback` is
+    invoked with decoded dictionaries, allowing clients to save or process
+    each line incrementally.  `device_index` selects a device before running.
+    Returns the ramp data exactly as the setting would.
+    """
+    result = yield _run_2d_ramp_with_callback(
+        server,
+        server.dac_led_buffer_ramp_2d,
+        (
+            dacPorts,
+            adcPorts,
+            startPoint,
+            fastAxisVector,
+            slowAxisVector,
+            stepsFast,
+            stepsSlow,
+            retrace,
+            snake,
+            numAdcAverages,
+            dacInterval_us,
+            dacSettlingTime_us,
+        ),
+        line_callback=line_callback,
+        device_index=device_index,
+    )
+    returnValue(result)
+
+
+def save_dac_led_buffer_ramp_2d(
+    filename=None,
+    *,
+    dac_ports,
+    adc_ports,
+    start_point,
+    fast_axis_vector,
+    slow_axis_vector,
+    steps_fast,
+    steps_slow,
+    retrace=False,
+    snake=False,
+    num_adc_averages=1,
+    dac_period_us=1000.0,
+    dac_settling_us=100.0,
+    device_index=None,
+):
+    """
+    Run a LED-style 2D sweep and dump every sample to an HDF5 file.
+
+    Simple one-shot helper for “just give me a file.”  Under the hood it
+    connects to LabRAD, runs :func:`dac_led_buffer_ramp_2d_with_callback`,
+    and appends each line to ``filename`` (defaults to ./data/timestamp).  The
+    dataset is named ``data`` and contains columns ``point_index``,
+    ``line_index``, each DAC voltage, and each ADC voltage.  Basic sweep
+    metadata (ports, vectors, step counts, etc.) are stored as attributes.
+
+    Returns the :class:`pathlib.Path` of the created file.
+    """
+    if reactor.running:
+        raise RuntimeError(
+            "Twisted reactor already running; call save_dac_led_buffer_ramp_2d "
+            "from a fresh process or manage the Deferred yourself."
+        )
+
+    if filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = Path("data") / f"{timestamp}_2d_ramp.h5"
+    else:
+        filename = Path(filename)
+
+    # lazy import to keep server lightweight if this helper is unused
+    import h5py
+
+    class _SimpleHDF5Saver(object):
+        def __init__(self, filename, column_names, metadata):
+            path = Path(filename).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.path = path
+            self.file = h5py.File(self.path, "w")
+            self.dataset = self.file.create_dataset(
+                "data",
+                shape=(0, len(column_names)),
+                maxshape=(None, len(column_names)),
+                dtype=np.float64,
+                chunks=True,
+            )
+            self.dataset.attrs["column_names"] = column_names
+            for key, value in metadata.items():
+                self.dataset.attrs[key] = value
+            self.rows_written = 0
+
+        def append(self, rows):
+            rows = np.asarray(rows, dtype=np.float64)
+            if not rows.size:
+                return
+            start = self.rows_written
+            stop = start + rows.shape[0]
+            self.dataset.resize((stop, rows.shape[1]))
+            self.dataset[start:stop, :] = rows
+            self.rows_written = stop
+
+        def close(self):
+            if getattr(self, "file", None):
+                self.file.flush()
+                self.file.close()
+                self.file = None
+
+    column_names = (
+        ["point_index", "line_index"]
+        + [f"dac_{port}" for port in dac_ports]
+        + [f"adc_{port}" for port in adc_ports]
+    )
+
+    metadata = {
+        "dac_ports": list(dac_ports),
+        "adc_ports": list(adc_ports),
+        "start_point": list(start_point),
+        "fast_axis_vector": list(fast_axis_vector),
+        "slow_axis_vector": list(slow_axis_vector),
+        "steps_fast": int(steps_fast),
+        "steps_slow": int(steps_slow),
+        "retrace": bool(retrace),
+        "snake": bool(snake),
+        "num_adc_averages": int(num_adc_averages),
+        "dac_period_us": float(dac_period_us),
+        "dac_settling_us": float(dac_settling_us),
+    }
+    saver = _SimpleHDF5Saver(filename, column_names, metadata)
+    start = np.asarray(start_point, dtype=float)
+    fast = np.asarray(fast_axis_vector, dtype=float)
+    slow = np.asarray(slow_axis_vector, dtype=float)
+    dac_ports = list(dac_ports)
+    adc_ports = list(adc_ports)
+
+    total_lines = steps_slow * (2 if retrace and not snake else 1)
+    slow_denominator = steps_slow - 1 if steps_slow > 1 else 1
+
+    def handle_line(info):
+        line_idx = int(info.get("line_index", 0))
+        if line_idx < 0 or line_idx >= total_lines:
+            return
+        channels = info.get("channels", [])
+        length_candidates = [len(values) for values in channels if values]
+        if not length_candidates:
+            return
+        length = max(length_candidates)
+        if length <= 0:
+            return
+
+        if retrace and not snake:
+            slow_step = line_idx // 2
+            is_forward = (line_idx % 2) == 0
+        else:
+            slow_step = line_idx
+            is_forward = (not snake) or (slow_step % 2 == 0)
+
+        slow_param = float(slow_step) / slow_denominator if slow_denominator else 0.0
+        slow_position = start + slow_param * slow
+
+        fast_fraction = np.linspace(0.0, 1.0, length, dtype=float)
+        if not is_forward:
+            fast_fraction = fast_fraction[::-1]
+
+        dac_rows = slow_position[None, :] + fast_fraction[:, None] * fast
+
+        adc_matrix = np.full((length, len(adc_ports)), np.nan, dtype=float)
+        for idx, values in enumerate(channels[: len(adc_ports)]):
+            arr = np.asarray(values, dtype=float)
+            count = min(len(arr), length)
+            adc_matrix[:count, idx] = arr[:count]
+
+        point_idx = np.arange(length, dtype=float)
+        line_idx_column = np.full(length, float(line_idx), dtype=float)
+
+        rows = np.column_stack([point_idx, line_idx_column, dac_rows, adc_matrix])
+        saver.append(rows)
+
+    @inlineCallbacks
+    def _main():
+        cxn = None
+        failed = False
+        error = None
+        try:
+            cxn = yield connectAsync()
+            server = cxn.dac_adc_giga
+            if device_index is not None:
+                yield server.select_device(device_index)
+            yield dac_led_buffer_ramp_2d_with_callback(
+                server,
+                dac_ports,
+                adc_ports,
+                start.tolist(),
+                fast.tolist(),
+                slow.tolist(),
+                steps_fast,
+                steps_slow,
+                retrace,
+                snake,
+                num_adc_averages,
+                dac_period_us,
+                dac_settling_us,
+                line_callback=handle_line,
+            )
+        except Exception as exc:
+            failed = True
+            error = exc
+        finally:
+            saver.close()
+            if cxn is not None:
+                yield cxn.disconnect()
+            if failed:
+                print(f"Ramp failed: {error}")
+            else:
+                print(f"Saved {saver.rows_written} rows to {saver.path}")
+            reactor.stop()
+
+    reactor.callWhenRunning(lambda: defer.ensureDeferred(_main()))
+    reactor.run()
+    return saver.path
+
+
+def parse_awg_data_payload(payload):
+    """
+    Decode a `sigAWGData` message into a plain dictionary.
+
+    Returns a dict with fields `reading_index`, `adc_ports`, and `values`.
+    """
+    if isinstance(payload, (list, tuple)):
+        payload = payload[0]
+    if isinstance(payload, bytes):
+        payload = payload.decode('utf-8')
+    data = json.loads(payload)
+    data["reading_index"] = int(data.get("reading_index", 0))
+    data["adc_ports"] = list(data.get("adc_ports", []))
+    data["values"] = [float(v) for v in data.get("values", [])]
+    return data
+
+
+@inlineCallbacks
+def awg_with_adc_with_callback(server, dacPorts, adcPorts, voltageLists,
+                                dacInterval_us, numCycles=1, *,
+                                reading_callback=None, device_index=None):
+    """
+    Run AWG_WITH_ADC and stream each ADC reading into a Python callback.
+
+    Args:
+        server: The LabRAD DAC-ADC server connection
+        dacPorts: Sequence of DAC channel IDs
+        adcPorts: Sequence of ADC channel IDs
+        voltageLists: Voltage arrays for each DAC channel
+        dacInterval_us: Time between DAC updates in microseconds
+        numCycles: Number of times to repeat the waveform
+        reading_callback: Called for each ADC reading with decoded dict
+        device_index: Optional device index to select before running
+
+    Returns:
+        The ramp data as returned by the setting
+    """
+    if device_index is not None:
+        try:
+            yield server.select_device(device_index)
+        except Exception as exc:
+            print(f"Warning: failed to select device {device_index}: {exc}")
+
+    if reading_callback is None:
+        def reading_callback(_info):
+            return None
+
+    def handler(context, payload):
+        try:
+            info = parse_awg_data_payload(payload)
+        except Exception as e:
+            print("Error: failed to parse sigAWGData payload")
+            print(e)
+            return
+        d = defer.maybeDeferred(reading_callback, info)
+        d.addErrback(lambda failure: print(f"Callback error: {failure}"))
+
+    yield server.signal__awg_data.connect(handler)
+    result = None
+    try:
+        result = yield server.awg_with_adc(dacPorts, adcPorts, voltageLists,
+                                            dacInterval_us, numCycles)
+    finally:
+        try:
+            yield server.signal__awg_data.disconnect(handler)
+        except Exception as e:
+            print(e)
+            pass
+
+    returnValue(result)
+
+
+def save_awg_with_adc(
+    filename=None,
+    *,
+    dac_ports,
+    adc_ports,
+    voltage_lists,
+    dac_interval_us,
+    num_cycles=1,
+    device_index=None,
+):
+    """
+    Run AWG_WITH_ADC and save all ADC readings to an HDF5 file.
+
+    Args:
+        filename: Path to HDF5 file (default: ./data/timestamp_awg.h5)
+        dac_ports: Sequence of DAC channel IDs
+        adc_ports: Sequence of ADC channel IDs
+        voltage_lists: Voltage arrays for each DAC channel
+        dac_interval_us: Time between DAC updates in microseconds
+        num_cycles: Number of times to repeat the waveform
+        device_index: Optional device index to select
+
+    Returns:
+        Path to the created HDF5 file
+    """
+    if reactor.running:
+        raise RuntimeError(
+            "Twisted reactor already running; call save_awg_with_adc "
+            "from a fresh process or manage the Deferred yourself."
+        )
+
+    if filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = Path("data") / f"{timestamp}_awg.h5"
+    else:
+        filename = Path(filename)
+
+    import h5py
+
+    class _AWGDataSaver(object):
+        def __init__(self, filename, column_names, metadata):
+            path = Path(filename).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.path = path
+            self.file = h5py.File(self.path, "w")
+            self.dataset = self.file.create_dataset(
+                "data",
+                shape=(0, len(column_names)),
+                maxshape=(None, len(column_names)),
+                dtype=np.float64,
+                chunks=True,
+            )
+            self.dataset.attrs["column_names"] = column_names
+            for key, value in metadata.items():
+                self.dataset.attrs[key] = value
+            self.rows_written = 0
+
+        def append(self, rows):
+            rows = np.asarray(rows, dtype=np.float64)
+            if not rows.size:
+                return
+            start = self.rows_written
+            stop = start + rows.shape[0]
+            self.dataset.resize((stop, rows.shape[1]))
+            self.dataset[start:stop, :] = rows
+            self.rows_written = stop
+
+        def close(self):
+            if getattr(self, "file", None):
+                self.file.flush()
+                self.file.close()
+                self.file = None
+
+    dac_ports = list(dac_ports)
+    adc_ports = list(adc_ports)
+    num_steps = len(voltage_lists[0]) if voltage_lists else 0
+
+    column_names = (
+        ["reading_index", "time_us"]
+        + [f"adc_{port}" for port in adc_ports]
+    )
+
+    metadata = {
+        "dac_ports": dac_ports,
+        "adc_ports": adc_ports,
+        "num_steps": num_steps,
+        "num_cycles": int(num_cycles),
+        "dac_interval_us": float(dac_interval_us),
+        "voltage_lists": [list(v) for v in voltage_lists],
+    }
+
+    saver = _AWGDataSaver(filename, column_names, metadata)
+
+    # Get conversion time later to compute time axis
+    conv_time_us = [500.0]  # will be updated
+
+    def handle_reading(info):
+        reading_idx = info.get("reading_index", 0)
+        values = info.get("values", [])
+
+        # Approximate time based on conversion time
+        time_us = (reading_idx + 1) * conv_time_us[0]
+
+        row = [float(reading_idx), time_us] + [float(v) for v in values]
+        saver.append([row])
+
+    @inlineCallbacks
+    def _main():
+        cxn = None
+        failed = False
+        error = None
+        try:
+            cxn = yield connectAsync()
+            server = cxn.dac_adc_giga
+            if device_index is not None:
+                yield server.select_device(device_index)
+
+            # Get actual conversion time
+            if adc_ports:
+                conv_time_us[0] = yield server.get_conversion_time(adc_ports[0])
+
+            yield awg_with_adc_with_callback(
+                server,
+                dac_ports,
+                adc_ports,
+                voltage_lists,
+                dac_interval_us,
+                num_cycles,
+                reading_callback=handle_reading,
+            )
+        except Exception as exc:
+            failed = True
+            error = exc
+        finally:
+            saver.close()
+            if cxn is not None:
+                yield cxn.disconnect()
+            if failed:
+                print(f"AWG failed: {error}")
+            else:
+                print(f"Saved {saver.rows_written} rows to {saver.path}")
+            reactor.stop()
+
+    reactor.callWhenRunning(lambda: defer.ensureDeferred(_main()))
+    reactor.run()
+    return saver.path
 
 
 __server__ = DAC_ADCServer()
