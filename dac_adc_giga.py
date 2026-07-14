@@ -39,8 +39,8 @@ import numpy as np
 import time
 # from exceptions import IndexError
 
-TIMEOUT = Value(5,'s')
-BAUD    = 10000
+TIMEOUT = Value(20,'s')
+BAUD    = 115200
 
 def twoByteToInt(DB1,DB2): # This gives a 16 bit integer (between +/- 2^16)
   return 256*DB1 + DB2
