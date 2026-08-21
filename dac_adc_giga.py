@@ -1524,6 +1524,275 @@ class DAC_ADCServer(DeviceServer):
             print("Error clearing the serial buffer after buffer_ramp")
         returnValue(channels)
         
+    @setting(223, kP='v[]', kI='v[]', conversion_time_us='v[]',
+                target_voltage='v[]', k_rep='v[]', rep_lead_us='v[]')
+    def begin_feedback(self, c, kP, kI, conversion_time_us, target_voltage,
+                       k_rep, rep_lead_us):
+        """Start BEGIN_FEEDBACK and return the first 100000 conversions as
+        [[adc readings], [dac outputs]].
+
+        The firmware streams one binary frame per conversion:
+        [adc_voltage, dac_output] as 2 x float32. We read exactly
+        100000 * 2 * 4 = 800000 bytes, then de-interleave into two channels.
+        The feedback loop KEEPS RUNNING after this returns -- call stop_ramp
+        to end it (which also makes the firmware print its text summary).
+        """
+
+        adcN = 2
+
+        dev = self.selectedDevice(c)
+
+        # Clear anything a previous run left in the pipe (e.g. the text dump
+        # printed at stop) so it can't be mistaken for our binary stream.
+        yield dev.reset_input_buffer()
+
+        yield dev.write(f"BEGIN_FEEDBACK,{kP},{kI},{conversion_time_us},"
+                        f"{target_voltage},{k_rep},{rep_lead_us}\n")
+
+        channels = []
+        data = b''
+
+        dev.setramping(True)
+
+        nbytes = 0
+        totalbytes = 100000 * 2 * 4   # must equal kTelemFrames * adcN * 4
+        last_progress = time.time()
+
+        while dev.isramping() and (nbytes < totalbytes):
+            bytestoread = yield dev.in_waiting()
+            if bytestoread > 0:
+                last_progress = time.time()
+                if nbytes + bytestoread > totalbytes:
+                    tmp = yield dev.readByte(totalbytes - nbytes)
+                    data = data + tmp
+                    nbytes = totalbytes
+                else:
+                    tmp = yield dev.readByte(bytestoread)
+                    data = data + tmp
+                    nbytes = nbytes + bytestoread
+            elif time.time() - last_progress > 3.0:
+                # No bytes for 3 s: the stream is stalled. Most common cause:
+                # a previous feedback loop is still running, so our command
+                # is queued and never started. Fail loudly instead of
+                # freezing the client forever.
+                dev.setramping(False)
+                raise ValueError(
+                    f"begin_feedback: stream stalled at {nbytes}/{totalbytes}"
+                    " bytes - is a previous feedback loop still running?"
+                    " (try stop_ramp, then call again)")
+
+            # The firmware sends failures as a text line instead of binary.
+            if data.startswith(b'FAILURE'):
+                while not data.endswith(b'\n'):
+                    bytestoread = yield dev.in_waiting()
+                    if bytestoread > 0:
+                        tmp = yield dev.readByte(bytestoread)
+                        data += tmp
+                yield dev.reset_input_buffer()
+                dev.setramping(False)
+                raise ValueError(data.decode('utf-8').strip())
+
+        dev.setramping(False)
+
+        # De-interleave: frame layout is [adc, dac], so even floats are the
+        # ADC channel and odd floats are the DAC channel.
+        for x in range(adcN):
+            channels.append([])
+        for i in range(len(data) // 4):
+            voltage = np.frombuffer(data[i * 4:(i + 1) * 4],
+                                    dtype=np.float32)[0]
+            channels[i % adcN].append(float(voltage))
+
+        # Leave the pipe clean for whoever talks to the device next.
+        try:
+            yield dev.reset_input_buffer()
+        except Exception:
+            print("Error clearing the serial buffer after begin_feedback")
+
+        returnValue(channels)
+
+    # @setting(223, kP = 'v[]', kI = 'v[]', conversion_time_us = 'v[]', target_voltage = 'v[]', k_rep = 'v', rep_lead_us = 'v[]')
+    # def begin_feedback(self, c, kP, kI, conversion_time_us, target_voltage, k_rep, rep_lead_us):
+    #     """
+    #     """
+        
+    #     adcN = 2
+        
+    #     dev = self.selectedDevice(c)
+    #     yield dev.reset_input_buffer()      # FIRST line, before dev.write(...)
+        
+    #     yield dev.write(f"BEGIN_FEEDBACK,{kP},{kI},{conversion_time_us},{target_voltage},{k_rep},{rep_lead_us}\n")
+        
+    #     channels = []
+    #     data = b''
+      
+    #     dev.setramping(True)
+
+    #     import time
+    #     last_progress = time.time()
+    #     while dev.isramping() and (nbytes < totalbytes):
+    #         bytestoread = yield dev.in_waiting()
+    #         if bytestoread > 0:
+    #             last_progress = time.time()
+    #             ...
+    #         elif time.time() - last_progress > 3.0:
+    #             dev.setramping(False)
+    #             raise ValueError(f"begin_feedback: stream stalled at {nbytes}/{totalbytes} bytes "
+    #                             "- is a previous feedback loop still running? (try stop_ramp)")
+                
+    #     try:
+    #         nbytes = 0
+    #         totalbytes = 100000 * 2 * 4
+    #         while dev.isramping() and (nbytes < totalbytes):
+    #             bytestoread = yield dev.in_waiting()
+    #             if bytestoread > 0:
+    #                 if nbytes + bytestoread > totalbytes:
+    #                     tmp = yield dev.readByte(totalbytes - nbytes)
+    #                     data = data + tmp
+    #                     nbytes = totalbytes
+    #                 else:
+    #                     tmp = yield dev.readByte(bytestoread)
+    #                     data = data + tmp
+    #                     nbytes = nbytes + bytestoread
+
+    #             if data.startswith(b'FAILURE'):
+    #                 while not data.endswith(b'\n'):
+    #                     bytestoread = yield dev.in_waiting()
+    #                     if bytestoread > 0:
+    #                         tmp = yield dev.readByte(bytestoread)
+    #                         data += tmp
+
+    #                 yield dev.reset_input_buffer()
+    #                 raise ValueError(data.decode('utf-8').strip())
+
+    #         dev.setramping(False)
+
+
+    #         for x in range(adcN):
+    #             channels.append([])
+            
+    #         for i in range(len(data) // 4):
+    #             voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+
+    #             channel_index = i % adcN
+                
+    #             channels[channel_index].append(float(voltage))
+
+        
+    #     except KeyboardInterrupt:
+    #         print('Stopped')
+
+    #     extraBytes = b''
+    #     bytestoread = yield dev.in_waiting()
+
+    #     if bytestoread > 0:
+    #         while not extraBytes.endswith(b'\n'):
+    #             bytestoread = yield dev.in_waiting()
+    #             if bytestoread > 0:
+    #                 tmp = yield dev.readByte(bytestoread)
+    #                 extraBytes += tmp
+
+    #     try:
+    #         decoded = extraBytes.decode('utf-8').strip()
+    #         if decoded.startswith('FAILURE'):
+    #             yield dev.reset_input_buffer()
+    #             raise ValueError(decoded)
+    #     except UnicodeDecodeError as e:
+    #         print(f"Decode error at byte {e.start}: {e.reason}")
+    #         print(f"Raw data: {extraBytes}")
+
+    #     try:
+    #         yield dev.reset_input_buffer()
+    #     except:
+    #         print("Error clearing the serial buffer after buffer_ramp")
+    #     returnValue(channels)
+
+    # @setting(223, kP = 'v[]', kI = 'v[]', conversion_time_us = 'v[]', target_voltage = 'v[]', k_rep = 'v', rep_lead_us = 'v[]')
+    #     def begin_feedback(self, c, kP, kI, conversion_time_us, target_voltage, k_rep, rep_lead_us):
+    #         """
+    #         """
+            
+    #         adcN = 1
+            
+    #         dev = self.selectedDevice(c)
+            
+    #         yield dev.write(f"BEGIN_FEEDBACK,{kP},{kI},{conversion_time_us},{target_voltage},{k_rep},{rep_lead_us}\n")
+            
+    #         channels = []
+    #         data = b''
+          
+    #         dev.setramping(True)
+    #         sampling_time_data = b''
+    #         sampling_time_data += yield dev.readByte(4)
+    #         sampling_time = np.frombuffer(sampling_time_data, dtype=np.float32)[0]
+            
+    #         try:
+    #             nbytes = 0
+    #             totalbytes = 100000 * 4
+    #             while dev.isramping() and (nbytes < totalbytes):
+    #                 bytestoread = yield dev.in_waiting()
+    #                 if bytestoread > 0:
+    #                     if nbytes + bytestoread > totalbytes:
+    #                         tmp = yield dev.readByte(totalbytes - nbytes)
+    #                         data = data + tmp
+    #                         nbytes = totalbytes
+    #                     else:
+    #                         tmp = yield dev.readByte(bytestoread)
+    #                         data = data + tmp
+    #                         nbytes = nbytes + bytestoread
+    
+    #                 if data.startswith(b'FAILURE'):
+    #                     while not data.endswith(b'\n'):
+    #                         bytestoread = yield dev.in_waiting()
+    #                         if bytestoread > 0:
+    #                             tmp = yield dev.readByte(bytestoread)
+    #                             data += tmp
+    
+    #                     yield dev.reset_input_buffer()
+    #                     raise ValueError(data.decode('utf-8').strip())
+    
+    #             dev.setramping(False)
+    
+    
+    #             for x in range(adcN):
+    #                 channels.append([])
+                
+    #             for i in range(len(data) // 4):
+    #                 voltage = np.frombuffer(data[i * 4:(i + 1) * 4], dtype=np.float32)[0]
+    
+    #                 channel_index = i % adcN
+                    
+    #                 channels[channel_index].append(float(voltage))
+    
+            
+    #         except KeyboardInterrupt:
+    #             print('Stopped')
+    
+    #         extraBytes = b''
+    #         bytestoread = yield dev.in_waiting()
+    
+    #         if bytestoread > 0:
+    #             while not extraBytes.endswith(b'\n'):
+    #                 bytestoread = yield dev.in_waiting()
+    #                 if bytestoread > 0:
+    #                     tmp = yield dev.readByte(bytestoread)
+    #                     extraBytes += tmp
+    
+    #         try:
+    #             decoded = extraBytes.decode('utf-8').strip()
+    #             if decoded.startswith('FAILURE'):
+    #                 yield dev.reset_input_buffer()
+    #                 raise ValueError(decoded)
+    #         except UnicodeDecodeError as e:
+    #             print(f"Decode error at byte {e.start}: {e.reason}")
+    #             print(f"Raw data: {extraBytes}")
+    
+    #         try:
+    #             yield dev.reset_input_buffer()
+    #         except:
+    #             print("Error clearing the serial buffer after buffer_ramp")
+    #         returnValue(channels)
+            
     
     @setting(108,dacPorts='*i', adcPorts='*i', ivoltages='*v[]', fvoltages='*v[]', steps='i',dacPeriod_us='v[]',adcPeriod_us='v[]',returns='**v[]')#(*v[],*v[])')
     def time_series_buffer_ramp(self,c,dacPorts,adcPorts,ivoltages,fvoltages,steps,dacPeriod_us,adcPeriod_us):

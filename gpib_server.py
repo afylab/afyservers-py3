@@ -36,12 +36,18 @@
 # were made here and in the next few revisions are hacks to make socket
 # connections work, and should be improved.
 
+import sys
+
 from labrad.server import LabradServer, setting
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.reactor import callLater
 from labrad.errors import DeviceNotSelectedError
 import labrad.units as units
-import niusbhs as visa
+
+if sys.platform == 'win32':
+    import pyvisa as visa
+else:
+    import niusbhs as visa
 
 
 """
